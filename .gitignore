@@ -1,0 +1,57 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# database
+*.db
+
+# uploads
+vidpod/public/uploads/
+
+# video files at root (user media, not code)
+*.mov
+
+# seed demo assets are tracked
+!public/uploads/assets/*.mp4
+
+# prisma generated
+/src/generated/prisma
+
+# env
+.env
+
+# lock files
+package-lock.json
+
+# prisma generated
+vidpod/src/generated/
+vidpod/prisma/*.db*
+
+# ai tooling
+.claude/
+CLAUDE.md

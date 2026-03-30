@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Episode {
+  id            String     @id @default(cuid())
+  title         String
+  videoPath     String
+  duration      Float      @default(0)
+  thumbnailPath String?
+  publishedAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  markers       AdMarker[]
+}
+
+model Ad {
+  id            String     @id @default(cuid())
+  name          String
+  folder        String?
+  filePath      String
+  duration      Float      @default(0)
+  thumbnailPath String?
+  createdAt     DateTime   @default(now())
+  markerAds     MarkerAd[]
+}
+
+model AdMarker {
+  id        String     @id @default(cuid())
+  episodeId String
+  episode   Episode    @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  timestamp Float
+  type      MarkerType
+  winnerId  String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  ads       MarkerAd[]
+}
+
+model MarkerAd {
+  id       String   @id @default(cuid())
+  markerId String
+  marker   AdMarker @relation(fields: [markerId], references: [id], onDelete: Cascade)
+  adId     String
+  ad       Ad       @relation(fields: [adId], references: [id])
+  position Int      @default(0)
+
+  @@unique([markerId, adId])
+}
+
+enum MarkerType {
+  AUTO
+  STATIC
+  AB_TEST
+}
