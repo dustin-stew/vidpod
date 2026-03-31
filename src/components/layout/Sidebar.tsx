@@ -61,10 +61,10 @@ export function Sidebar() {
           onClick={() => setPropertyOpen(!propertyOpen)}
           className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-gray-50 transition-colors text-left"
         >
-          <div className="w-7 h-7 bg-amber-100 rounded-md flex items-center justify-center shrink-0">
-            <span className="text-amber-600 text-xs font-bold">D</span>
+          <div className="w-7 h-7 bg-red-100 rounded-md flex items-center justify-center shrink-0">
+            <span className="text-red-600 text-xs font-bold">R</span>
           </div>
-          <span className="text-[clamp(0.8125rem,0.75vw,1.125rem)] font-medium text-gray-800 truncate flex-1">The Diary Of A CEO</span>
+          <span className="text-[clamp(0.8125rem,0.75vw,1.125rem)] font-medium text-gray-800 truncate flex-1">Redmen TV</span>
           <svg className={cn('w-4 h-4 text-gray-400 shrink-0 transition-transform', propertyOpen && 'rotate-180')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
@@ -72,10 +72,10 @@ export function Sidebar() {
         {propertyOpen && (
           <div className="absolute left-3 right-3 top-full mt-1 bg-white rounded-xl border border-gray-200 shadow-lg z-50 py-1 overflow-hidden">
             <div className="flex items-center gap-2.5 px-3 py-2 bg-gray-50">
-              <div className="w-6 h-6 bg-orange-100 rounded-md flex items-center justify-center shrink-0">
-                <span className="text-orange-600 text-[10px] font-bold">D</span>
+              <div className="w-6 h-6 bg-red-100 rounded-md flex items-center justify-center shrink-0">
+                <span className="text-red-600 text-[10px] font-bold">R</span>
               </div>
-              <span className="text-xs font-medium text-gray-900 truncate">The Diary Of A CEO</span>
+              <span className="text-xs font-medium text-gray-900 truncate">Redmen TV</span>
               <svg className="w-3.5 h-3.5 text-gray-400 shrink-0 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>

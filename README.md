@@ -2,38 +2,34 @@
 
 Video podcast production platform with dynamic ad insertion and A/B testing.
 
+![Vidpod Demo](docs/screenshots/tutorial-demo.gif)
+
 ## Core Features
 
 ### Episode Designer
-- Drag-and-drop timeline editor for assembling video/audio clips
-- Waveform visualization with automatic quiet-spot detection for optimal ad placement
-- Multi-clip playback with seamless clip boundary transitions
-- Split content clips at any point to insert ads mid-stream
-- Undo/redo support and keyboard shortcuts (spacebar play/pause, cmd+z)
+Drag-and-drop timeline editor for assembling video and audio clips. Includes waveform visualization with automatic quiet-spot detection for optimal ad placement, multi-clip playback with seamless transitions, and clip splitting for mid-stream ad insertion.
+
+![Episode Designer — Ads Tab](docs/screenshots/episode-designer-ads.png)
+
+Supports undo/redo and keyboard shortcuts (spacebar play/pause, cmd+z). Toggle between 16:9 and 9:16 aspect ratios.
+
+### Ad Sets & AB Test Groups
+Organize ads into reusable **Ad Sets**, then combine ad sets into **AB Test Groups** for variant testing. Insert groups as stacked variant clips in the timeline and click to preview different ad creatives.
+
+<p float="left">
+  <img src="docs/screenshots/episode-designer-adsets.png" width="49%" />
+  <img src="docs/screenshots/episode-designer-abtests.png" width="49%" />
+</p>
 
 ### Asset Management
-- Upload and manage content and ad assets (video/audio)
-- Automatic MOV-to-MP4 transcoding for browser compatibility
-- Organize ads into reusable **Ad Sets**
-- Combine ad sets into **AB Test Groups** for variant testing
+Upload and manage content and ad assets. Automatic MOV-to-MP4 transcoding for browser compatibility.
 
-### AB Testing
-- Insert AB test groups as stacked variant clips in the timeline
-- Click variants to preview different ad creatives in the video flow
-- Publish episodes to register AB test pairings for analytics
-- Per-clip timestamp tracking for multiple test insertions per episode
+![Assets Library](docs/screenshots/assets-library.png)
 
 ### Analytics Dashboard
-- View performance metrics for published AB test/episode combinations
-- Variant comparison table: impressions, clicks, CTR, conversions, revenue
-- Daily impressions sparkline charts
-- Statistical significance indicators
-- Automatic winner detection by CTR
+View performance metrics for published AB tests. Variant comparison tables with impressions, clicks, CTR, conversions, and revenue. Includes daily impressions sparklines, statistical significance indicators, and automatic winner detection.
 
-### Multi-format Support
-- Toggle between 16:9 and 9:16 aspect ratios
-- Video and audio asset types
-- Content and ad asset classifications
+![Analytics](docs/screenshots/analytics.png)
 
 ## Tech Stack
 

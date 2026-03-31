@@ -7,6 +7,7 @@ import { usePlayerStore } from '@/store/playerStore'
 import { WaveformTrack } from '@/components/timeline/WaveformTrack'
 import { ZoomControl } from '@/components/timeline/ZoomControl'
 import { AssetPanel } from './AssetPanel'
+import { TutorialOverlay } from './TutorialOverlay'
 import { packClips, findPackedAtTime } from '@/lib/clipUtils'
 import { findQuietSpots } from '@/lib/audioAnalyzer'
 import { formatTimestamp, secondsToPixels, pixelsToSeconds, clamp } from '@/lib/utils'
@@ -525,6 +526,7 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
             {title}
           </button>
         )}
+        <TutorialOverlay />
         <div className="flex-1" />
         <button
           onClick={async () => {

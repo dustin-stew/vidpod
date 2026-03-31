@@ -1,0 +1,18 @@
+BENCHMARK RESULTS — 24,063,348 rows
+============================================================
+
+1. Daily multi-metric aggregation
+   Pandas: 11.95s | Spark: 2.84s | Speedup: 4.2x
+
+2. Episode audience overlap (self-join)
+   Pandas: 46.12s | Spark: 5.22s | Speedup: 8.8x
+
+3. Window-based deduplication
+   Pandas: 34.05s | Spark: 9.02s | Speedup: 3.8x
+
+============================================================
+Operation                             Pandas    Spark  Speedup
+------------------------------------------------------------
+Daily multi-metric agg                11.95s    2.84s     4.2x
+Episode overlap (self-join)           46.12s    5.22s     8.8x
+Window dedup                          34.05s    9.02s     3.8x

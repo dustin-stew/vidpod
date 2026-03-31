@@ -76,10 +76,10 @@ export function AssetPanel({
   return (
     <div className="relative flex flex-col border-r border-gray-100 bg-gray-50 overflow-hidden" style={{ width: '40%' }}>
       <div className="h-10 shrink-0 flex items-center gap-1 px-2 border-b border-gray-100 bg-white overflow-x-auto">
-        <TabPill active={assetTab === 'content'} onClick={() => { setAssetTab('content'); setSelectedAdIds(new Set()); setSelectedAdSetId(null); setSelectedAbTestGroupId(null) }}>Content</TabPill>
-        <TabPill active={assetTab === 'ad'} onClick={() => { setAssetTab('ad'); setSelectedAdSetId(null); setSelectedAbTestGroupId(null) }} accent>Ads</TabPill>
-        <TabPill active={assetTab === 'ad_set'} onClick={() => { setAssetTab('ad_set'); setSelectedAdIds(new Set()); setSelectedAbTestGroupId(null); refreshAdSets() }}>Ad Sets</TabPill>
-        <TabPill active={assetTab === 'ab_test'} onClick={() => { setAssetTab('ab_test'); setSelectedAdIds(new Set()); setSelectedAdSetId(null); refreshAbTestGroups() }}>AB Test Groups</TabPill>
+        <TabPill data-tour="tab-content" active={assetTab === 'content'} onClick={() => { setAssetTab('content'); setSelectedAdIds(new Set()); setSelectedAdSetId(null); setSelectedAbTestGroupId(null) }}>Content</TabPill>
+        <TabPill data-tour="tab-ad" active={assetTab === 'ad'} onClick={() => { setAssetTab('ad'); setSelectedAdSetId(null); setSelectedAbTestGroupId(null) }} accent>Ads</TabPill>
+        <TabPill data-tour="tab-ad_set" active={assetTab === 'ad_set'} onClick={() => { setAssetTab('ad_set'); setSelectedAdIds(new Set()); setSelectedAbTestGroupId(null); refreshAdSets() }}>Ad Sets</TabPill>
+        <TabPill data-tour="tab-ab_test" active={assetTab === 'ab_test'} onClick={() => { setAssetTab('ab_test'); setSelectedAdIds(new Set()); setSelectedAdSetId(null); refreshAbTestGroups() }}>AB Test Groups</TabPill>
       </div>
 
       {/* content/ads tab */}
@@ -395,12 +395,13 @@ function AssetIcon({ asset, selected, onClick, onDragStart, onDragEnd, onDuratio
   )
 }
 
-function TabPill({ active, onClick, accent, children }: {
-  active: boolean; onClick: () => void; accent?: boolean; children: React.ReactNode
+function TabPill({ active, onClick, accent, children, 'data-tour': dataTour }: {
+  active: boolean; onClick: () => void; accent?: boolean; children: React.ReactNode; 'data-tour'?: string
 }) {
   return (
     <button
       onClick={onClick}
+      data-tour={dataTour}
       className={`px-3 py-1 text-[clamp(0.875rem,0.75vw,1.125rem)] font-medium rounded-full transition-colors ${
         active
           ? accent ? 'bg-orange-100 text-orange-700' : 'bg-gray-900 text-white'
