@@ -30,6 +30,7 @@ const migrations = [
   `ALTER TABLE episode_clips ADD COLUMN ab_test_group_id TEXT`,
   `ALTER TABLE episode_clips ADD COLUMN ab_test_variant_ids TEXT`,
   `ALTER TABLE episode_clips ADD COLUMN ab_test_group_name TEXT`,
+  `ALTER TABLE assets ADD COLUMN folder TEXT`,
 ]
 for (const sql of migrations) {
   try { db.exec(sql) } catch { /* already exists */ }

@@ -7,9 +7,11 @@ Video podcast production platform with dynamic ad insertion and A/B testing.
 ## Core Features
 
 ### Episode Designer
-Drag-and-drop timeline editor for assembling video and audio clips. Includes waveform visualization with automatic quiet-spot detection for optimal ad placement, multi-clip playback with seamless transitions, and clip splitting for mid-stream ad insertion.
+Markers-first timeline editor for assembling video clips and placing ads. A side panel lists every ad marker (single ads and AB test groups) and the content clips on the timeline; content is draggable onto the track. The **Create ad marker** dialog picks from ads, ad sets, or AB test groups — scoped by folder — and inserts at the playhead. Each marker has inline edit (swap asset or AB group in place) and delete controls.
 
-![Episode Designer — Ads Tab](docs/screenshots/episode-designer-ads.png)
+Waveform visualization with automatic quiet-spot detection highlights optimal ad placement, and clip splitting handles mid-stream insertion. Horizontal and vertical dividers let you resize the marker panel, preview, and timeline to taste (persisted per browser).
+
+![Episode Designer](docs/screenshots/episode-designer-ads.png)
 
 Supports undo/redo and keyboard shortcuts (spacebar play/pause, cmd+z). Toggle between 16:9 and 9:16 aspect ratios.
 
@@ -22,7 +24,7 @@ Organize ads into reusable **Ad Sets**, then combine ad sets into **AB Test Grou
 </p>
 
 ### Asset Management
-Upload and manage content and ad assets. Automatic MOV-to-MP4 transcoding for browser compatibility.
+Upload and manage content and ad assets, organized into folders under a **Redmen TV** root. Folder selection is required on upload and creation so assets route cleanly into the ad library. Automatic MOV-to-MP4 transcoding for browser compatibility.
 
 ![Assets Library](docs/screenshots/assets-library.png)
 
