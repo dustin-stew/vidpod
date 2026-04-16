@@ -8,9 +8,16 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const type = searchParams.get('type') as 'video' | 'audio' | null
     const contentType = searchParams.get('contentType') as 'content' | 'ad' | null
+    const folderParam = searchParams.get('folder')
+    const folderFilter = folderParam === null
+      ? undefined
+      : folderParam === '__none__'
+        ? null
+        : folderParam
     const assets = listAssets({
       type: type ?? undefined,
       contentType: contentType ?? undefined,
+      ...(folderFilter !== undefined ? { folder: folderFilter } : {}),
     })
     return NextResponse.json(assets)
   } catch (err) {
@@ -22,7 +29,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { name, filePath, type, contentType, duration } = body
+    const { name, filePath, type, contentType, duration, folder } = body
 
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'name is required' }, { status: 400 })
@@ -37,7 +44,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'contentType must be content or ad' }, { status: 400 })
     }
 
-    const asset = createAsset({ name, filePath, type, contentType, duration })
+    const normalizedFolder = typeof folder === 'string' && folder.trim() ? folder.trim() : null
+    const asset = createAsset({ name, filePath, type, contentType, duration, folder: normalizedFolder })
     return NextResponse.json(asset, { status: 201 })
   } catch (err) {
     console.error('[POST /api/assets]', err)

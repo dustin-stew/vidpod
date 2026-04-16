@@ -42,6 +42,9 @@ function createDatabase(): any {
   try {
     db.exec(`ALTER TABLE episode_clips ADD COLUMN ab_test_group_name TEXT;`)
   } catch { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE assets ADD COLUMN folder TEXT;`)
+  } catch { /* already exists */ }
   return db
 }
 

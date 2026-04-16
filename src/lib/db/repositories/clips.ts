@@ -99,6 +99,28 @@ export function splitClip(clipId: string, splitOffset: number, adAssetId: string
   }
 }
 
+/**
+ * Reverse a splitClip: delete the ad clip and the trailing content clip,
+ * and restore the original clip's end_offset to the trailing clip's end_offset.
+ * Returns the restored clip.
+ */
+export function mergeSplit(clip1Id: string, adClipId: string, clip2Id: string): EpisodeClip {
+  const clip1 = db.prepare('SELECT * FROM episode_clips WHERE id = ?').get(clip1Id) as ClipRow | undefined
+  const adClip = db.prepare('SELECT * FROM episode_clips WHERE id = ?').get(adClipId) as ClipRow | undefined
+  const clip2 = db.prepare('SELECT * FROM episode_clips WHERE id = ?').get(clip2Id) as ClipRow | undefined
+  if (!clip1 || !adClip || !clip2) throw new Error('mergeSplit: missing clip(s)')
+
+  db.prepare('DELETE FROM episode_clips WHERE id = ?').run(adClipId)
+  db.prepare('DELETE FROM episode_clips WHERE id = ?').run(clip2Id)
+  db.prepare('UPDATE episode_clips SET end_offset = ? WHERE id = ?').run(clip2.end_offset, clip1Id)
+  db.prepare(
+    `UPDATE episode_clips SET order_index = order_index - 2 WHERE episode_id = ? AND order_index > ?`
+  ).run(clip1.episode_id, clip1.order_index)
+
+  const restored = db.prepare('SELECT * FROM episode_clips WHERE id = ?').get(clip1Id) as ClipRow
+  return rowToClip(restored)!
+}
+
 export function removeClip(id: string): void {
   const clip = db.prepare('SELECT * FROM episode_clips WHERE id = ?').get(id) as ClipRow | null
   if (!clip) return
@@ -111,6 +133,47 @@ export function removeClip(id: string): void {
 export function reorderClips(episodeId: string, orderedIds: string[]): void {
   const stmt = db.prepare('UPDATE episode_clips SET order_index = ? WHERE id = ? AND episode_id = ?')
   orderedIds.forEach((id, index) => stmt.run(index, id, episodeId))
+}
+
+/**
+ * Scans episode_clips for adjacent content siblings (same asset_id where left.end_offset === right.start_offset)
+ * and merges them: extends the left clip's end_offset to the right clip's end_offset, deletes the right clip,
+ * shifts later order_indexes. Repeats until no more pairs match. Returns merge info for client state sync.
+ */
+export interface MergeRecord {
+  keptId: string
+  deletedId: string
+  newEndOffset: number
+  splitOffset: number // the original left.end_offset === right.start_offset; used to reverse the merge
+}
+export function mergeAdjacentSiblings(episodeId: string): MergeRecord[] {
+  const merges: MergeRecord[] = []
+  while (true) {
+    const rows = db
+      .prepare('SELECT * FROM episode_clips WHERE episode_id = ? ORDER BY order_index ASC')
+      .all(episodeId) as ClipRow[]
+    let found = false
+    for (let i = 0; i < rows.length - 1; i++) {
+      const left = rows[i]
+      const right = rows[i + 1]
+      if (
+        left.clip_type === 'content' &&
+        right.clip_type === 'content' &&
+        left.asset_id === right.asset_id &&
+        left.end_offset === right.start_offset
+      ) {
+        db.prepare('UPDATE episode_clips SET end_offset = ? WHERE id = ?').run(right.end_offset, left.id)
+        db.prepare('DELETE FROM episode_clips WHERE id = ?').run(right.id)
+        db.prepare('UPDATE episode_clips SET order_index = order_index - 1 WHERE episode_id = ? AND order_index > ?')
+          .run(episodeId, right.order_index)
+        merges.push({ keptId: left.id, deletedId: right.id, newEndOffset: right.end_offset, splitOffset: right.start_offset })
+        found = true
+        break
+      }
+    }
+    if (!found) break
+  }
+  return merges
 }
 
 export function updateClipAbTest(clipId: string, data: {

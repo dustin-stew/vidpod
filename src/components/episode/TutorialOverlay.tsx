@@ -3,10 +3,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 
 const STEPS = [
-  { target: 'tab-content', message: 'Add your content clips from this tab' },
-  { target: 'tab-ad', message: 'Drop in individual ads here' },
-  { target: 'tab-ad_set', message: 'Or group multiple ads into a set' },
-  { target: 'tab-ab_test', message: 'Run tests across ad sets to find winners' },
+  { target: 'create-ad-marker', message: 'Pick an ad, ad set, or AB test to insert' },
+  { target: 'marker-row', message: 'Hover a marker to edit or delete it' },
+  { target: 'playhead', message: 'Drag the playhead to set where a new ad goes' },
+  { target: 'split-handle-v', message: 'Drag any divider to resize panels' },
 ]
 
 const STEP_DURATION = 2100
@@ -43,11 +43,13 @@ export function TutorialOverlay() {
     }
   }, [startTour])
 
-  // reposition on step change
+  // reposition on step change, skipping any step whose target is missing
   useEffect(() => {
     if (step < 0 || step >= STEPS.length) { setBubbleRect(null); return }
     const el = document.querySelector(`[data-tour="${STEPS[step].target}"]`)
-    if (el) setBubbleRect(el.getBoundingClientRect())
+    if (el) { setBubbleRect(el.getBoundingClientRect()); return }
+    if (step < STEPS.length - 1) setStep(step + 1)
+    else { setPlaying(false); setStep(-1) }
   }, [step])
 
   // phase state machine

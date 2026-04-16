@@ -6,9 +6,11 @@ interface WaveformTrackProps {
   src: string
   zoom: number
   height?: number
+  waveColor?: string
+  progressColor?: string
 }
 
-export function WaveformTrack({ src, zoom, height }: WaveformTrackProps) {
+export function WaveformTrack({ src, zoom, height, waveColor, progressColor }: WaveformTrackProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<ReturnType<typeof import('wavesurfer.js')['default']['create']> | null>(null)
   const [measuredHeight, setMeasuredHeight] = useState(height ?? 120)
@@ -41,8 +43,8 @@ export function WaveformTrack({ src, zoom, height }: WaveformTrackProps) {
       const ws = WaveSurfer.create({
         container,
         height: resolvedHeight,
-        waveColor: 'rgba(139, 92, 246, 0.5)',
-        progressColor: 'rgba(139, 92, 246, 0.7)',
+        waveColor: waveColor ?? 'rgba(139, 92, 246, 0.5)',
+        progressColor: progressColor ?? waveColor ?? 'rgba(139, 92, 246, 0.7)',
         cursorColor: 'transparent',
         barWidth: 2,
         barGap: 1,
@@ -64,7 +66,7 @@ export function WaveformTrack({ src, zoom, height }: WaveformTrackProps) {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, resolvedHeight])
+  }, [src, resolvedHeight, waveColor, progressColor])
 
   useEffect(() => {
     wsRef.current?.zoom(zoom)

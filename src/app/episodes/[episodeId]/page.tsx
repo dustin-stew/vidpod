@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getEpisodeWithMarkers } from '@/lib/db/repositories/episodes'
 import { listClips } from '@/lib/db/repositories/clips'
-import { listAssets } from '@/lib/db/repositories/assets'
+import { listAssets, listAdFolders } from '@/lib/db/repositories/assets'
 import { listAdSets } from '@/lib/db/repositories/adSets'
 import { listAbTestGroups } from '@/lib/db/repositories/abTestGroups'
 import { EpisodeDesigner } from '@/components/episode/EpisodeDesigner'
@@ -22,6 +22,7 @@ export default async function EpisodeRoute({ params }: Props) {
   const adAssets = listAssets({ contentType: 'ad' })
   const adSets = listAdSets()
   const abTestGroups = listAbTestGroups()
+  const adFolders = listAdFolders()
 
   return (
     <EpisodeDesigner
@@ -31,6 +32,7 @@ export default async function EpisodeRoute({ params }: Props) {
       adAssets={adAssets}
       initialAdSets={adSets}
       initialAbTestGroups={abTestGroups}
+      initialAdFolders={adFolders}
     />
   )
 }

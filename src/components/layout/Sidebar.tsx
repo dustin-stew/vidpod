@@ -9,7 +9,17 @@ export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const [propertyOpen, setPropertyOpen] = useState(false)
+  const [hidden, setHidden] = useState(false)
   const propertyRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem('sidebar-hidden') : null
+    if (v === '1') setHidden(true)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem('sidebar-hidden', hidden ? '1' : '0')
+  }, [hidden])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -20,6 +30,21 @@ export function Sidebar() {
     if (propertyOpen) document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [propertyOpen])
+
+  if (hidden) {
+    return (
+      <button
+        onClick={() => setHidden(false)}
+        title="Show sidebar"
+        aria-label="Show sidebar"
+        className="fixed top-3 left-3 z-40 w-8 h-8 rounded-lg bg-white border border-gray-200 shadow-sm flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-50 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+    )
+  }
 
   async function handleNewEpisode() {
     const res = await fetch('/api/episodes', {
@@ -52,7 +77,17 @@ export function Sidebar() {
             <path d="M8 5v14l11-7z" />
           </svg>
         </div>
-        <span className="font-semibold text-gray-900 text-[clamp(1rem,0.9vw,1.375rem)]">Vidpod</span>
+        <span className="font-semibold text-gray-900 text-[clamp(1rem,0.9vw,1.375rem)] flex-1">Vidpod</span>
+        <button
+          onClick={() => setHidden(true)}
+          title="Hide sidebar"
+          aria-label="Hide sidebar"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
       </div>
 
       {/* property selector */}

@@ -8,6 +8,7 @@ export interface Asset {
   type: 'video' | 'audio'
   contentType: AssetContentType
   duration: number
+  folder: string | null
   createdAt: string
 }
 

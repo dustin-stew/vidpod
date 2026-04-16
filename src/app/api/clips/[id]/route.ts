@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { removeClip, reorderClips, splitClip, updateClipAbTest } from '@/lib/db/repositories/clips'
+import { mergeSplit, removeClip, reorderClips, splitClip, updateClipAbTest } from '@/lib/db/repositories/clips'
 
 export const runtime = 'nodejs'
 
@@ -26,6 +26,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         abTestGroupName: body.abTestGroupName ?? null,
       })
       return new NextResponse(null, { status: 204 })
+    }
+
+    if (body.action === 'mergeSplit') {
+      const { adClipId, clip2Id } = body
+      if (!adClipId || !clip2Id) {
+        return NextResponse.json({ error: 'adClipId and clip2Id required' }, { status: 400 })
+      }
+      const restored = mergeSplit(id, adClipId, clip2Id)
+      return NextResponse.json(restored)
     }
 
     if (body.action === 'split') {

@@ -6,18 +6,20 @@ import { useMarkerStore } from '@/store/markerStore'
 import { usePlayerStore } from '@/store/playerStore'
 import { WaveformTrack } from '@/components/timeline/WaveformTrack'
 import { ZoomControl } from '@/components/timeline/ZoomControl'
-import { AssetPanel } from './AssetPanel'
+import { EpisodeMarkerPanel } from './EpisodeMarkerPanel'
+import { CreateAdMarkerDialog } from './CreateAdMarkerDialog'
 import { TutorialOverlay } from './TutorialOverlay'
 import { packClips, findPackedAtTime } from '@/lib/clipUtils'
 import { findQuietSpots } from '@/lib/audioAnalyzer'
 import { formatTimestamp, secondsToPixels, pixelsToSeconds, clamp } from '@/lib/utils'
-import type { Asset, AssetPanelTab, EpisodeClip, EpisodeWithMarkers, AdSet, AbTestGroup } from '@/types'
+import type { Asset, EpisodeClip, EpisodeWithMarkers, AdSet, AbTestGroup } from '@/types'
 
 const DEFAULT_ZOOM = 60        // px/sec
-const CLIP_TRACK_H = 100       // px — clips row above waveform
-const WAVE_TRACK_H = 100       // px — fixed height for waveform
+const CLIP_TRACK_H = 140       // px — single clip+waveform bar height
 const RULER_H = 24             // px
 const PLAYHEAD_HIT_W = 16      // px — draggable hit area width
+const WAVE_COLOR = 'rgba(147, 197, 253, 0.9)'      // light blue waveform fill
+const WAVE_PROGRESS = 'rgba(96, 165, 250, 0.95)'   // slightly deeper on playback progress
 
 
 interface Props {
@@ -27,17 +29,45 @@ interface Props {
   adAssets: Asset[]
   initialAdSets: AdSet[]
   initialAbTestGroups: AbTestGroup[]
+  initialAdFolders: string[]
 }
 
 
-export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets, initialAdSets, initialAbTestGroups }: Props) {
+export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets, initialAdSets, initialAbTestGroups, initialAdFolders }: Props) {
   const router = useRouter()
 
-  // marker store
+  // marker store (legacy — kept for marker panel compatibility)
   const initialize = useMarkerStore((s) => s.initialize)
-  const undo = useMarkerStore((s) => s.undo)
-  const redo = useMarkerStore((s) => s.redo)
   useEffect(() => { initialize(episode.markers) }, [episode.id]) // eslint-disable-line
+
+  // clip-action history (undo/redo for clip-level edits like ad drops)
+  type HistoryEntry = { undo: () => Promise<void> | void; redo: () => Promise<void> | void }
+  const pastRef = useRef<HistoryEntry[]>([])
+  const futureRef = useRef<HistoryEntry[]>([])
+  const [, setHistoryTick] = useState(0)
+  const bumpHistory = () => setHistoryTick((v) => v + 1)
+  const pushHistory = useCallback((entry: HistoryEntry) => {
+    pastRef.current = [...pastRef.current, entry].slice(-50)
+    futureRef.current = []
+    bumpHistory()
+  }, [])
+  const undo = useCallback(async () => {
+    const entry = pastRef.current[pastRef.current.length - 1]
+    if (!entry) return
+    pastRef.current = pastRef.current.slice(0, -1)
+    futureRef.current = [entry, ...futureRef.current].slice(0, 50)
+    bumpHistory()
+    await entry.undo()
+  }, [])
+  const redo = useCallback(async () => {
+    const entry = futureRef.current[0]
+    if (!entry) return
+    futureRef.current = futureRef.current.slice(1)
+    pastRef.current = [...pastRef.current, entry].slice(-50)
+    bumpHistory()
+    await entry.redo()
+  }, [])
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); undo() }
@@ -123,11 +153,13 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
     })
   }, [])
 
-  const [assetTab, setAssetTab] = useState<AssetPanelTab>('content')
   const allAssets = [...contentAssets, ...adAssets]
 
-  const [selectedAdIds, setSelectedAdIds] = useState<Set<string>>(new Set())
   const [autoInserting, setAutoInserting] = useState(false)
+  const [markerDialogOpen, setMarkerDialogOpen] = useState(false)
+  const [editingClipId, setEditingClipId] = useState<string | null>(null)
+  const [editingTime, setEditingTime] = useState<number | null>(null)
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
 
   // ab test clip state
   const [abTestClips, setAbTestClips] = useState<Record<string, { groupName: string; variants: Asset[]; activeAssetId: string; abTestGroupId?: string; abTestGroupName?: string }>>(() => {
@@ -152,16 +184,105 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
     }
     return restored
   })
+  const abTestClipsRef = useRef(abTestClips)
+  useEffect(() => { abTestClipsRef.current = abTestClips }, [abTestClips])
 
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9')
 
+  const [leftPanelPct, setLeftPanelPct] = useState(40)
+  useEffect(() => {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem('episode-left-panel-pct') : null
+    const n = v ? parseFloat(v) : NaN
+    if (!isNaN(n) && n >= 20 && n <= 75) setLeftPanelPct(n)
+  }, [])
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem('episode-left-panel-pct', String(leftPanelPct))
+  }, [leftPanelPct])
+  const splitRowRef = useRef<HTMLDivElement>(null)
+  const startSplitResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const row = splitRowRef.current
+    if (!row) return
+    const rect = row.getBoundingClientRect()
+    const onMove = (ev: MouseEvent) => {
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100
+      setLeftPanelPct(Math.min(75, Math.max(20, pct)))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  const [topRowPct, setTopRowPct] = useState(35)
+  useEffect(() => {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem('episode-top-row-pct') : null
+    const n = v ? parseFloat(v) : NaN
+    if (!isNaN(n) && n >= 15 && n <= 80) setTopRowPct(n)
+  }, [])
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem('episode-top-row-pct', String(topRowPct))
+  }, [topRowPct])
+  const bodyColRef = useRef<HTMLDivElement>(null)
+  const startVerticalResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const col = bodyColRef.current
+    if (!col) return
+    const rect = col.getBoundingClientRect()
+    const onMove = (ev: MouseEvent) => {
+      const pct = ((ev.clientY - rect.top) / rect.height) * 100
+      setTopRowPct(Math.min(80, Math.max(15, pct)))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
   const [zoom, setZoom] = useState(DEFAULT_ZOOM)
+
+  // zoom toward the viewport center: preserve the timeline time at the horizontal middle
+  const handleZoomChange = useCallback((nextZoom: number) => {
+    const el = scrollRef.current
+    if (!el || zoom === nextZoom) { setZoom(nextZoom); return }
+    const centerTime = (el.scrollLeft + el.clientWidth / 2) / zoom
+    setZoom(nextZoom)
+    requestAnimationFrame(() => {
+      const el2 = scrollRef.current
+      if (!el2) return
+      el2.scrollLeft = Math.max(0, centerTime * nextZoom - el2.clientWidth / 2)
+    })
+  }, [zoom])
 
   const draggingAssetRef = useRef<Asset | null>(null)
   const draggingClipRef = useRef<string | null>(null) // clipId
+  const draggingAdSetRef = useRef<AdSet | null>(null)
+  const draggingAbTestGroupRef = useRef<AbTestGroup | null>(null)
+  const grabOffsetRef = useRef(0) // seconds from clip's left edge to cursor at dragstart
 
   const [insertIdx, setInsertIdx] = useState<number | null>(null)
   const [dragTime, setDragTime] = useState<number | null>(null)
+  const [dragGhost, setDragGhost] = useState<{ clipId: string; offsetPx: number } | null>(null)
+  const [splitHint, setSplitHint] = useState<{
+    clipId: string
+    splitX: number          // px from track start
+    splitTime: number       // virtual timeline seconds
+    adWidth: number         // px width of ad placeholder
+    localSplit: number      // seconds from start of target clip
+    label?: string          // override the "Ad" text (e.g., "Ad set ×3")
+  } | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -239,6 +360,16 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
   }, [setCurrentTime, setPlaying, setCurrentClipSrc]) // eslint-disable-line
 
   // insertion index from x position
+  function virtualizePacked(p: typeof packed, excludedClipId: string | null) {
+    if (!excludedClipId) return p
+    const idx = p.findIndex(pp => pp.clip.id === excludedClipId)
+    if (idx < 0) return p
+    const excluded = p[idx]
+    return p
+      .filter((_, i) => i !== idx)
+      .map(pp => (pp.start > excluded.start ? { ...pp, start: pp.start - excluded.dur } : pp))
+  }
+
   function xToInsertIndex(clientX: number): number {
     const rect = scrollRef.current?.getBoundingClientRect()
     if (!rect) return clips.length
@@ -267,32 +398,132 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
     e.dataTransfer.setData('text/plain', 'panel')
     e.dataTransfer.effectAllowed = 'copy'
   }
-  function onPanelDragEnd() { draggingAssetRef.current = null; setInsertIdx(null); setDragTime(null) }
+  function onPanelDragEnd() { draggingAssetRef.current = null; setInsertIdx(null); setDragTime(null); setSplitHint(null) }
 
   function onClipDragStart(e: React.DragEvent, clipId: string) {
     draggingClipRef.current = clipId
     draggingAssetRef.current = null
     e.dataTransfer.setData('text/plain', 'clip')
     e.dataTransfer.effectAllowed = 'move'
+    // grab offset: where inside the clip (in seconds) the user grabbed
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    grabOffsetRef.current = (e.clientX - rect.left) / zoom
+    // hide native drag image (we render our own ghost on the track)
+    const img = new Image()
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    e.dataTransfer.setDragImage(img, 0, 0)
   }
-  function onClipDragEnd() { draggingClipRef.current = null; setInsertIdx(null); setDragTime(null) }
+  function onClipDragEnd() {
+    draggingClipRef.current = null
+    setInsertIdx(null)
+    setDragTime(null)
+    setSplitHint(null)
+    setDragGhost(null)
+  }
+
+  function onAdSetDragStart(e: React.DragEvent, adSet: AdSet) {
+    draggingAdSetRef.current = adSet
+    draggingAbTestGroupRef.current = null
+    draggingAssetRef.current = null
+    e.dataTransfer.setData('text/plain', 'ad_set')
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+  function onAdSetDragEnd() { draggingAdSetRef.current = null; setInsertIdx(null); setDragTime(null); setSplitHint(null) }
+
+  function onAbTestGroupDragStart(e: React.DragEvent, group: AbTestGroup) {
+    draggingAbTestGroupRef.current = group
+    draggingAdSetRef.current = null
+    draggingAssetRef.current = null
+    e.dataTransfer.setData('text/plain', 'ab_test_group')
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+  function onAbTestGroupDragEnd() { draggingAbTestGroupRef.current = null; setInsertIdx(null); setDragTime(null); setSplitHint(null) }
 
   const onTrackDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = draggingClipRef.current ? 'move' : 'copy'
-    const idx = xToInsertIndex(e.clientX)
-    setInsertIdx(idx)
     const rect = scrollRef.current?.getBoundingClientRect()
-    if (rect) {
-      const x = e.clientX - rect.left + (scrollRef.current?.scrollLeft ?? 0)
-      setDragTime(x / zoom)
+    const x = rect ? e.clientX - rect.left + (scrollRef.current?.scrollLeft ?? 0) : 0
+    const t = x / zoom
+    setDragTime(t)
+
+    // figure out what's being dragged and how it splits content
+    const asset = draggingAssetRef.current
+    const adSet = draggingAdSetRef.current
+    const group = draggingAbTestGroupRef.current
+
+    let totalAdSeconds = 0
+    let label: string | undefined
+
+    if (asset && asset.contentType === 'ad') {
+      totalAdSeconds = assetDurations[asset.id] ?? asset.duration ?? 0
+    } else if (adSet) {
+      totalAdSeconds = adSet.assets.reduce((s, a) => s + (assetDurations[a.id] ?? a.duration ?? 0), 0)
+      label = `Ad set ×${adSet.assets.length}`
+    } else if (group) {
+      // dropping an AB test group inserts a single "AB" ad clip using the first variant
+      const firstAsset = group.adSets[0]?.assets[0]
+      totalAdSeconds = firstAsset ? (assetDurations[firstAsset.id] ?? firstAsset.duration ?? 0) : 0
+      const variantCount = group.adSets.reduce((s, g) => s + g.assets.length, 0)
+      label = `AB ×${variantCount}`
     }
-  }, [zoom, packed]) // eslint-disable-line
+
+    // also support dragging an existing ad clip onto a content clip's middle
+    const draggingClipId = draggingClipRef.current
+    let draggedAdClipDur = 0
+    let isDraggingExistingAd = false
+    if (draggingClipId) {
+      const dragged = packedRef.current.find(p => p.clip.id === draggingClipId)
+      if (dragged?.clip.clipType === 'ad') {
+        isDraggingExistingAd = true
+        draggedAdClipDur = assetDurations[dragged.clip.assetId] ?? dragged.clip.asset?.duration ?? 0
+      }
+    }
+
+    if (asset?.contentType === 'ad' || adSet || group || isDraggingExistingAd) {
+      const p = packedRef.current
+      // for existing-ad drags, use the ad's left edge (cursor - grab offset) as the proposed new start
+      const searchT = isDraggingExistingAd ? t - grabOffsetRef.current : t
+      // snap: if dragging existing ad and its proposed new start is near its current start, move along bar only
+      if (isDraggingExistingAd) {
+        const excluded = p.find(pp => pp.clip.id === draggingClipId)
+        const SNAP = 1 // seconds
+        if (excluded && Math.abs(searchT - excluded.start) < SNAP) {
+          setSplitHint(null)
+          setInsertIdx(null)
+          setDragGhost({ clipId: draggingClipId!, offsetPx: (searchT - excluded.start) * zoom })
+          return
+        }
+      }
+      setDragGhost(null)
+      // virtualize: when moving an existing ad, remove it so adjacent content becomes contiguous
+      const searchPacked = isDraggingExistingAd ? virtualizePacked(p, draggingClipId) : p
+      const target = searchPacked.find(({ start, dur, clip }) =>
+        clip.clipType === 'content' && clip.id !== draggingClipId && searchT > start + 0.3 && searchT < start + dur - 0.3
+      )
+      if (target) {
+        setSplitHint({
+          clipId: target.clip.id,
+          splitX: secondsToPixels(searchT, zoom),
+          splitTime: searchT,
+          adWidth: Math.max(secondsToPixels(isDraggingExistingAd ? draggedAdClipDur : totalAdSeconds, zoom), 48),
+          localSplit: searchT - target.start + (target.clip.startOffset ?? 0),
+          label,
+        })
+        setInsertIdx(null)
+        return
+      }
+    }
+    setDragGhost(null)
+    setSplitHint(null)
+    setInsertIdx(xToInsertIndex(e.clientX))
+  }, [zoom, packed, assetDurations]) // eslint-disable-line
 
   const onTrackDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setInsertIdx(null)
       setDragTime(null)
+      setSplitHint(null)
     }
   }, [])
 
@@ -300,6 +531,190 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
     e.preventDefault()
     setInsertIdx(null)
     setDragTime(null)
+    setSplitHint(null)
+
+    const rectForDrop = scrollRef.current?.getBoundingClientRect()
+    const dropX = rectForDrop ? e.clientX - rectForDrop.left + (scrollRef.current?.scrollLeft ?? 0) : 0
+    const dropT = dropX / zoom
+
+    // ad-set drop: split content at drop point and insert all ads sequentially
+    if (draggingAdSetRef.current) {
+      const adSet = draggingAdSetRef.current
+      draggingAdSetRef.current = null
+      const p = packedRef.current
+      const target = p.find(({ start, dur, clip }) =>
+        clip.clipType === 'content' && dropT > start + 0.3 && dropT < start + dur - 0.3
+      )
+      if (!target || adSet.assets.length === 0) return
+      const splitOffset = dropT - target.start + (target.clip.startOffset ?? 0)
+      const snapshotBefore = clipsRef.current
+      const originalEndOffset = target.clip.endOffset
+
+      const splitRes = await fetch(`/api/clips/${target.clip.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'split', splitOffset, adAssetId: adSet.assets[0].id }),
+      })
+      if (!splitRes.ok) return
+      const { clip1, adClip, clip2 } = await splitRes.json()
+      const insertedAdClips: EpisodeClip[] = [adClip]
+      // insert remaining ads between adClip and clip2
+      for (let i = 1; i < adSet.assets.length; i++) {
+        const orderIndex = clip1.orderIndex + 1 + i
+        const r = await fetch('/api/clips', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ episodeId: episode.id, assetId: adSet.assets[i].id, clipType: 'ad', orderIndex }),
+        })
+        if (r.ok) insertedAdClips.push(await r.json())
+      }
+      // rebuild clip list
+      const cur = snapshotBefore
+      const fromIdx = cur.findIndex(c => c.id === target.clip.id)
+      const next = [...cur]
+      next.splice(fromIdx, 1, clip1, ...insertedAdClips, clip2)
+      updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+
+      const idRef = { clip1Id: clip1.id, adClipId: adClip.id, clip2Id: clip2.id, extraAdIds: insertedAdClips.slice(1).map(c => c.id) }
+      pushHistory({
+        undo: async () => {
+          // delete the extra ads first, then merge the split
+          for (const id of idRef.extraAdIds) {
+            await fetch(`/api/clips/${id}`, { method: 'DELETE' })
+          }
+          await fetch(`/api/clips/${idRef.clip1Id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+          })
+          updateClips(snapshotBefore.map((c, i) =>
+            c.id === idRef.clip1Id ? { ...c, endOffset: originalEndOffset, orderIndex: i } : { ...c, orderIndex: i }
+          ))
+        },
+        redo: async () => {
+          const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'split', splitOffset, adAssetId: adSet.assets[0].id }),
+          })
+          if (!r.ok) return
+          const again = await r.json()
+          const newExtras: EpisodeClip[] = []
+          for (let i = 1; i < adSet.assets.length; i++) {
+            const r2 = await fetch('/api/clips', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ episodeId: episode.id, assetId: adSet.assets[i].id, clipType: 'ad', orderIndex: again.clip1.orderIndex + 1 + i }),
+            })
+            if (r2.ok) newExtras.push(await r2.json())
+          }
+          const c = clipsRef.current
+          const fIdx = c.findIndex(x => x.id === idRef.clip1Id)
+          const nxt = [...c]
+          nxt.splice(fIdx, 1, again.clip1, again.adClip, ...newExtras, again.clip2)
+          updateClips(nxt.map((c2, i) => ({ ...c2, orderIndex: i })))
+          idRef.clip1Id = again.clip1.id
+          idRef.adClipId = again.adClip.id
+          idRef.clip2Id = again.clip2.id
+          idRef.extraAdIds = newExtras.map(c => c.id)
+        },
+      })
+      return
+    }
+
+    // ab-test-group drop: split content and insert a single AB-test ad clip
+    if (draggingAbTestGroupRef.current) {
+      const group = draggingAbTestGroupRef.current
+      draggingAbTestGroupRef.current = null
+      const variantAssets = group.adSets.flatMap(g => g.assets)
+      if (variantAssets.length === 0) return
+      const p = packedRef.current
+      const target = p.find(({ start, dur, clip }) =>
+        clip.clipType === 'content' && dropT > start + 0.3 && dropT < start + dur - 0.3
+      )
+      if (!target) return
+      const splitOffset = dropT - target.start + (target.clip.startOffset ?? 0)
+      const snapshotBefore = clipsRef.current
+      const originalEndOffset = target.clip.endOffset
+
+      const splitRes = await fetch(`/api/clips/${target.clip.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'split', splitOffset, adAssetId: variantAssets[0].id }),
+      })
+      if (!splitRes.ok) return
+      const { clip1, adClip, clip2 } = await splitRes.json()
+      // mark as AB test on the server
+      await fetch(`/api/clips/${adClip.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'setAbTest',
+          abTestGroupId: group.id,
+          abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)),
+          abTestGroupName: group.name,
+        }),
+      })
+      const cur = snapshotBefore
+      const fromIdx = cur.findIndex(c => c.id === target.clip.id)
+      const markedAdClip = { ...adClip, abTestGroupId: group.id, abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)), abTestGroupName: group.name }
+      const next = [...cur]
+      next.splice(fromIdx, 1, clip1, markedAdClip, clip2)
+      updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+      setAbTestClips(prev => ({
+        ...prev,
+        [adClip.id]: {
+          groupName: group.name,
+          variants: variantAssets,
+          activeAssetId: variantAssets[0].id,
+          abTestGroupId: group.id,
+          abTestGroupName: group.name,
+        },
+      }))
+
+      const idRef = { clip1Id: clip1.id, adClipId: adClip.id, clip2Id: clip2.id }
+      pushHistory({
+        undo: async () => {
+          await fetch(`/api/clips/${idRef.clip1Id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+          })
+          updateClips(snapshotBefore.map((c, i) =>
+            c.id === idRef.clip1Id ? { ...c, endOffset: originalEndOffset, orderIndex: i } : { ...c, orderIndex: i }
+          ))
+          setAbTestClips(prev => { const n = { ...prev }; delete n[idRef.adClipId]; return n })
+        },
+        redo: async () => {
+          const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'split', splitOffset, adAssetId: variantAssets[0].id }),
+          })
+          if (!r.ok) return
+          const again = await r.json()
+          await fetch(`/api/clips/${again.adClip.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'setAbTest',
+              abTestGroupId: group.id,
+              abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)),
+              abTestGroupName: group.name,
+            }),
+          })
+          const c2 = clipsRef.current
+          const fIdx = c2.findIndex(x => x.id === idRef.clip1Id)
+          const nxt = [...c2]
+          nxt.splice(fIdx, 1, again.clip1, { ...again.adClip, abTestGroupId: group.id, abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)), abTestGroupName: group.name }, again.clip2)
+          updateClips(nxt.map((c3, i) => ({ ...c3, orderIndex: i })))
+          setAbTestClips(prev => ({
+            ...prev,
+            [again.adClip.id]: {
+              groupName: group.name,
+              variants: variantAssets,
+              activeAssetId: variantAssets[0].id,
+              abTestGroupId: group.id,
+              abTestGroupName: group.name,
+            },
+          }))
+          idRef.clip1Id = again.clip1.id
+          idRef.adClipId = again.adClip.id
+          idRef.clip2Id = again.clip2.id
+        },
+      })
+      return
+    }
 
     if (draggingAssetRef.current) {
       const asset = draggingAssetRef.current
@@ -317,6 +732,7 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
         )
         if (target) {
           const splitOffset = dropTime - target.start + (target.clip.startOffset ?? 0)
+          const originalEndOffset = target.clip.endOffset
           const res = await fetch(`/api/clips/${target.clip.id}`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'split', splitOffset, adAssetId: asset.id }),
@@ -325,9 +741,51 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
             const { clip1, adClip, clip2 } = await res.json()
             const current = clipsRef.current
             const fromIdx = current.findIndex(c => c.id === target.clip.id)
+            const snapshotBefore = current
             const next = [...current]
             next.splice(fromIdx, 1, clip1, adClip, clip2)
-            updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+            const snapshotAfter = next.map((c, i) => ({ ...c, orderIndex: i }))
+            updateClips(snapshotAfter)
+
+            // history: undo reverses the split via mergeSplit; redo re-splits.
+            // IDs of adClip/clip2 change on redo, so track them via a mutable ref.
+            const idRef = { clip1Id: clip1.id, adClipId: adClip.id, clip2Id: clip2.id }
+            pushHistory({
+              undo: async () => {
+                const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+                  method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+                })
+                if (r.ok) {
+                  updateClips(snapshotBefore.map((c, i) =>
+                    c.id === idRef.clip1Id ? { ...c, endOffset: originalEndOffset, orderIndex: i } : { ...c, orderIndex: i }
+                  ))
+                  // clear ab-test entry on the removed ad clip if any
+                  setAbTestClips((prev) => {
+                    if (!prev[idRef.adClipId]) return prev
+                    const n = { ...prev }; delete n[idRef.adClipId]; return n
+                  })
+                }
+              },
+              redo: async () => {
+                const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+                  method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'split', splitOffset, adAssetId: asset.id }),
+                })
+                if (r.ok) {
+                  const again = await r.json()
+                  const cur = clipsRef.current
+                  const fIdx = cur.findIndex(c => c.id === idRef.clip1Id)
+                  const nxt = [...cur]
+                  nxt.splice(fIdx, 1, again.clip1, again.adClip, again.clip2)
+                  updateClips(nxt.map((c, i) => ({ ...c, orderIndex: i })))
+                  // update tracked IDs so the next undo targets the new ad/clip2
+                  idRef.clip1Id = again.clip1.id
+                  idRef.adClipId = again.adClip.id
+                  idRef.clip2Id = again.clip2.id
+                }
+              },
+            })
           }
           return
         }
@@ -340,6 +798,7 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
       })
       if (res.ok) {
         const newClip: EpisodeClip = await res.json()
+        const snapshotBefore = clipsRef.current
         const next = [...clipsRef.current]
         next.splice(idx, 0, newClip)
         updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
@@ -350,39 +809,512 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
           activeClipIdRef.current = newClip.id
           setCurrentClipSrc(src)
         }
+        pushHistory({
+          undo: async () => {
+            await fetch(`/api/clips/${newClip.id}`, { method: 'DELETE' })
+            updateClips(snapshotBefore.map((c, i) => ({ ...c, orderIndex: i })))
+          },
+          redo: async () => {
+            const r = await fetch('/api/clips', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ episodeId: episode.id, assetId: asset.id, clipType: asset.contentType, orderIndex: idx }),
+            })
+            if (r.ok) {
+              const created: EpisodeClip = await r.json()
+              const cur = clipsRef.current
+              const nxt = [...cur]
+              nxt.splice(idx, 0, created)
+              updateClips(nxt.map((c, i) => ({ ...c, orderIndex: i })))
+            }
+          },
+        })
       }
     } else if (draggingClipRef.current) {
       const clipId = draggingClipRef.current
       draggingClipRef.current = null
-      const idx = xToInsertIndex(e.clientX)
       const current = clipsRef.current
+      const dragged = current.find(c => c.id === clipId)
+
+      // if moving an ad onto a content clip's middle, split-move: remove old ad, split target at drop, re-mark AB if needed
+      if (dragged?.clipType === 'ad') {
+        const p = packedRef.current
+        // proposed new start = cursor time minus where inside the clip the user grabbed
+        const newAdStart = dropT - grabOffsetRef.current
+        // snap: within 1s of current ad start -> no-op
+        const excluded = p.find(pp => pp.clip.id === clipId)
+        const SNAP = 1
+        if (excluded && Math.abs(newAdStart - excluded.start) < SNAP) return
+        // use virtualized packed so adjacent content clips become contiguous when the ad is removed
+        const searchPacked = virtualizePacked(p, clipId)
+        const target = searchPacked.find(({ start, dur, clip }) =>
+          clip.clipType === 'content' && clip.id !== clipId && newAdStart > start + 0.3 && newAdStart < start + dur - 0.3
+        )
+        if (target) {
+          const splitOffset = newAdStart - target.start + (target.clip.startOffset ?? 0)
+          const adAssetId = dragged.assetId
+          const oldAbInfo = abTestClipsRef.current[clipId]
+          const snapshotBefore = current
+          const originalAd = dragged
+          const originalTargetEndOffset = target.clip.endOffset
+
+          await fetch(`/api/clips/${clipId}`, { method: 'DELETE' })
+
+          const res = await fetch(`/api/clips/${target.clip.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'split', splitOffset, adAssetId }),
+          })
+          if (!res.ok) return
+          const { clip1, adClip, clip2 } = await res.json()
+
+          if (oldAbInfo) {
+            await fetch(`/api/clips/${adClip.id}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'setAbTest',
+                abTestGroupId: oldAbInfo.abTestGroupId,
+                abTestVariantIds: JSON.stringify(oldAbInfo.variants.map(v => v.id)),
+                abTestGroupName: oldAbInfo.abTestGroupName ?? oldAbInfo.groupName,
+              }),
+            })
+          }
+
+          const withoutOld = current.filter(c => c.id !== clipId)
+          const targetIdx = withoutOld.findIndex(c => c.id === target.clip.id)
+          const markedAdClip = oldAbInfo
+            ? { ...adClip, abTestGroupId: oldAbInfo.abTestGroupId, abTestVariantIds: JSON.stringify(oldAbInfo.variants.map(v => v.id)), abTestGroupName: oldAbInfo.abTestGroupName ?? oldAbInfo.groupName }
+            : adClip
+          const next = [...withoutOld]
+          next.splice(targetIdx, 1, clip1, markedAdClip, clip2)
+
+          if (oldAbInfo) {
+            setAbTestClips(prev => {
+              const n = { ...prev }
+              delete n[clipId]
+              n[adClip.id] = oldAbInfo
+              return n
+            })
+          }
+
+          // auto-merge any content siblings that became adjacent after deleting the old ad
+          const { clips: afterMerges, merges: splitMoveMerges } = await runMergeSiblings(next.map((c, i) => ({ ...c, orderIndex: i })))
+          updateClips(afterMerges)
+
+          const idRef = {
+            oldAdAssetId: originalAd.assetId,
+            oldAdOrderIndex: originalAd.orderIndex,
+            oldAdId: clipId, // tracks the most recently-created id for this "old ad" across undo/redo
+            targetId: target.clip.id,
+            clip1Id: clip1.id,
+            adClipId: adClip.id,
+            clip2Id: clip2.id,
+            merges: splitMoveMerges as MergeRec[],
+          }
+          pushHistory({
+            undo: async () => {
+              // reverse the NEW split → restores target clip
+              await fetch(`/api/clips/${idRef.clip1Id}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+              })
+              // reverse auto-merge (if any) by re-splitting the kept clip AND re-inserting the old ad in one op
+              let recreated: EpisodeClip | null = null
+              if (idRef.merges.length === 1) {
+                const m = idRef.merges[0]
+                const r = await fetch(`/api/clips/${m.keptId}`, {
+                  method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'split', splitOffset: m.splitOffset, adAssetId: idRef.oldAdAssetId }),
+                })
+                if (r.ok) {
+                  const { adClip: reAd } = await r.json()
+                  recreated = reAd
+                }
+              } else {
+                const r = await fetch('/api/clips', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    episodeId: episode.id,
+                    assetId: idRef.oldAdAssetId,
+                    clipType: 'ad',
+                    orderIndex: idRef.oldAdOrderIndex,
+                  }),
+                })
+                if (r.ok) recreated = await r.json()
+              }
+              if (recreated) {
+                idRef.oldAdId = recreated.id
+                if (oldAbInfo) {
+                  await fetch(`/api/clips/${recreated.id}`, {
+                    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'setAbTest',
+                      abTestGroupId: oldAbInfo.abTestGroupId,
+                      abTestVariantIds: JSON.stringify(oldAbInfo.variants.map(v => v.id)),
+                      abTestGroupName: oldAbInfo.abTestGroupName ?? oldAbInfo.groupName,
+                    }),
+                  })
+                  setAbTestClips(prev => {
+                    const n = { ...prev }
+                    delete n[idRef.adClipId]
+                    n[recreated!.id] = oldAbInfo
+                    return n
+                  })
+                }
+              }
+              // Rebuild from the pre-action snapshot, substituting the re-created ad's new id + AB fields
+              const restored = snapshotBefore.map(c => {
+                if (c.id === originalAd.id && recreated) {
+                  return {
+                    ...recreated,
+                    abTestGroupId: oldAbInfo?.abTestGroupId ?? null,
+                    abTestVariantIds: oldAbInfo ? JSON.stringify(oldAbInfo.variants.map(v => v.id)) : null,
+                    abTestGroupName: oldAbInfo?.abTestGroupName ?? oldAbInfo?.groupName ?? null,
+                  }
+                }
+                if (c.id === idRef.targetId) return { ...c, endOffset: originalTargetEndOffset }
+                return c
+              })
+              updateClips(restored.map((c, i) => ({ ...c, orderIndex: i })))
+            },
+            redo: async () => {
+              await fetch(`/api/clips/${idRef.oldAdId}`, { method: 'DELETE' })
+              const r = await fetch(`/api/clips/${idRef.targetId}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'split', splitOffset, adAssetId }),
+              })
+              if (!r.ok) return
+              const again = await r.json()
+              idRef.clip1Id = again.clip1.id
+              idRef.adClipId = again.adClip.id
+              idRef.clip2Id = again.clip2.id
+              if (oldAbInfo) {
+                await fetch(`/api/clips/${again.adClip.id}`, {
+                  method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    action: 'setAbTest',
+                    abTestGroupId: oldAbInfo.abTestGroupId,
+                    abTestVariantIds: JSON.stringify(oldAbInfo.variants.map(v => v.id)),
+                    abTestGroupName: oldAbInfo.abTestGroupName ?? oldAbInfo.groupName,
+                  }),
+                })
+                setAbTestClips(prev => {
+                  const n = { ...prev }
+                  delete n[idRef.oldAdId]
+                  n[again.adClip.id] = oldAbInfo
+                  return n
+                })
+              }
+              const cur = clipsRef.current
+              const withoutOld2 = cur.filter(c => c.id !== idRef.oldAdId)
+              const tIdx = withoutOld2.findIndex(c => c.id === idRef.targetId)
+              const markedAgain = oldAbInfo
+                ? { ...again.adClip, abTestGroupId: oldAbInfo.abTestGroupId, abTestVariantIds: JSON.stringify(oldAbInfo.variants.map(v => v.id)), abTestGroupName: oldAbInfo.abTestGroupName ?? oldAbInfo.groupName }
+                : again.adClip
+              const nxt = [...withoutOld2]
+              nxt.splice(tIdx, 1, again.clip1, markedAgain, again.clip2)
+              const { clips: merged2, merges: againMerges } = await runMergeSiblings(nxt.map((c, i) => ({ ...c, orderIndex: i })))
+              idRef.merges = againMerges
+              updateClips(merged2)
+            },
+          })
+          return
+        }
+      }
+
+      const idx = xToInsertIndex(e.clientX)
       const fromIdx = current.findIndex((c) => c.id === clipId)
       if (fromIdx < 0 || fromIdx === idx || fromIdx + 1 === idx) return
+      const prevSnapshot = current
       const next = [...current]
       const [moved] = next.splice(fromIdx, 1)
       const insertAt = idx > fromIdx ? idx - 1 : idx
       next.splice(insertAt, 0, moved)
-      updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+      const nextSnapshot = next.map((c, i) => ({ ...c, orderIndex: i }))
+      updateClips(nextSnapshot)
       await fetch(`/api/clips/${clipId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ episodeId: episode.id, orderedIds: next.map((c) => c.id) }),
       })
+      pushHistory({
+        undo: async () => {
+          updateClips(prevSnapshot.map((c, i) => ({ ...c, orderIndex: i })))
+          await fetch(`/api/clips/${clipId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ episodeId: episode.id, orderedIds: prevSnapshot.map((c) => c.id) }),
+          })
+        },
+        redo: async () => {
+          updateClips(nextSnapshot)
+          await fetch(`/api/clips/${clipId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ episodeId: episode.id, orderedIds: nextSnapshot.map((c) => c.id) }),
+          })
+        },
+      })
     }
-  }, [episode.id, zoom, packed]) // eslint-disable-line
+  }, [episode.id, zoom, packed, pushHistory]) // eslint-disable-line
+
+  type MergeRec = { keptId: string; deletedId: string; newEndOffset: number; splitOffset: number }
+
+  // Request server-side merge of adjacent content siblings (clip pairs where right.startOffset === left.endOffset
+  // and they share assetId). Apply returned merges to the provided clip list and return { clips, merges }.
+  async function runMergeSiblings(baseClips: EpisodeClip[]): Promise<{ clips: EpisodeClip[]; merges: MergeRec[] }> {
+    const r = await fetch(`/api/episodes/${episode.id}/merge-siblings`, { method: 'POST' })
+    if (!r.ok) return { clips: baseClips, merges: [] }
+    const { merges } = await r.json() as { merges: MergeRec[] }
+    if (!merges || merges.length === 0) return { clips: baseClips, merges: [] }
+    let out = baseClips
+    for (const m of merges) {
+      out = out
+        .filter(c => c.id !== m.deletedId)
+        .map(c => c.id === m.keptId ? { ...c, endOffset: m.newEndOffset } : c)
+    }
+    return { clips: out.map((c, i) => ({ ...c, orderIndex: i })), merges }
+  }
 
   async function removeClip(id: string) {
+    const beforeSnapshot = clipsRef.current
+    const removed = beforeSnapshot.find((c) => c.id === id)
+    if (!removed) return
     await fetch(`/api/clips/${id}`, { method: 'DELETE' })
-    const remaining = clipsRef.current.filter((c) => c.id !== id).map((c, i) => ({ ...c, orderIndex: i }))
-    updateClips(remaining)
+    const remaining = beforeSnapshot.filter((c) => c.id !== id).map((c, i) => ({ ...c, orderIndex: i }))
+    const { clips: merged, merges } = await runMergeSiblings(remaining)
+    updateClips(merged)
     // clear waveform if empty
     if (remaining.length === 0) {
       setCurrentClipSrc('')
       currentClipSrcRef.current = ''
       activeClipIdRef.current = null
     }
+    const undoMergeRef = { merges, lastRecreatedId: id }
+    pushHistory({
+      undo: async () => {
+        // If auto-merge happened when we removed an ad, reverse it via splitClip which atomically
+        // re-creates the two siblings AND inserts the ad in the middle.
+        if (removed.clipType === 'ad' && undoMergeRef.merges.length === 1) {
+          const m = undoMergeRef.merges[0]
+          const r = await fetch(`/api/clips/${m.keptId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'split', splitOffset: m.splitOffset, adAssetId: removed.assetId }),
+          })
+          if (r.ok) {
+            const { clip1, adClip, clip2 } = await r.json()
+            undoMergeRef.lastRecreatedId = adClip.id
+            const cur = clipsRef.current
+            const idx = cur.findIndex(c => c.id === m.keptId)
+            const nxt = [...cur]
+            nxt.splice(idx, 1, clip1, adClip, clip2)
+            updateClips(nxt.map((c, i) => ({ ...c, orderIndex: i })))
+            return
+          }
+        }
+        // Fallback: plain re-add at original order index
+        const r = await fetch('/api/clips', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            episodeId: episode.id,
+            assetId: removed.assetId,
+            clipType: removed.clipType,
+            orderIndex: removed.orderIndex,
+          }),
+        })
+        if (r.ok) {
+          const recreated: EpisodeClip = await r.json()
+          undoMergeRef.lastRecreatedId = recreated.id
+          const cur = clipsRef.current
+          const nxt = [...cur]
+          nxt.splice(removed.orderIndex, 0, recreated)
+          updateClips(nxt.map((c, i) => ({ ...c, orderIndex: i })))
+        }
+      },
+      redo: async () => {
+        const delId = undoMergeRef.lastRecreatedId
+        await fetch(`/api/clips/${delId}`, { method: 'DELETE' })
+        const rem = clipsRef.current.filter((c) => c.id !== delId).map((c, i) => ({ ...c, orderIndex: i }))
+        const { clips: again, merges: againMerges } = await runMergeSiblings(rem)
+        undoMergeRef.merges = againMerges
+        updateClips(again)
+      },
+    })
   }
 
   // auto-insert at quietest spots
+  // find the content clip + split offset that best matches a given timeline time.
+  // if the time is inside a valid content clip, use that. otherwise snap to the nearest
+  // content clip and clamp to a safe edge margin.
+  const nearestValidSplit = useCallback((time: number) => {
+    const p = packedRef.current
+    const contentItems = p.filter(i => i.clip.clipType === 'content')
+    if (contentItems.length === 0) return null
+    const EDGE = 0.3
+    const hit = contentItems.find(i => time > i.start + EDGE && time < i.start + i.dur - EDGE)
+    if (hit) {
+      return {
+        target: hit,
+        splitOffset: time - hit.start + (hit.clip.startOffset ?? 0),
+        adjustedTime: time,
+      }
+    }
+    let best: typeof contentItems[number] | null = null
+    let bestDist = Infinity
+    let bestClamped = 0
+    for (const item of contentItems) {
+      const left = item.start + EDGE
+      const right = item.start + item.dur - EDGE
+      if (right <= left) continue
+      const clamped = Math.max(left, Math.min(right, time))
+      const dist = Math.abs(clamped - time)
+      if (dist < bestDist) { bestDist = dist; best = item; bestClamped = clamped }
+    }
+    if (!best) return null
+    return {
+      target: best,
+      splitOffset: bestClamped - best.start + (best.clip.startOffset ?? 0),
+      adjustedTime: bestClamped,
+    }
+  }, [])
+
+  // programmatic single-ad insert at a given time (used by the "insert at playhead" flow).
+  // mirrors the ad-drop branch of onTrackDrop.
+  const insertAdAtTime = useCallback(async (asset: Asset, time: number) => {
+    const found = nearestValidSplit(time)
+    if (!found) return
+    const { target, splitOffset } = found
+    const originalEndOffset = target.clip.endOffset
+    const res = await fetch(`/api/clips/${target.clip.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'split', splitOffset, adAssetId: asset.id }),
+    })
+    if (!res.ok) return
+    const { clip1, adClip, clip2 } = await res.json()
+    const snapshotBefore = clipsRef.current
+    const fromIdx = snapshotBefore.findIndex(c => c.id === target.clip.id)
+    const next = [...snapshotBefore]
+    next.splice(fromIdx, 1, clip1, adClip, clip2)
+    updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+
+    const idRef = { clip1Id: clip1.id, adClipId: adClip.id, clip2Id: clip2.id }
+    pushHistory({
+      undo: async () => {
+        const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+        })
+        if (r.ok) {
+          updateClips(snapshotBefore.map((c, i) =>
+            c.id === idRef.clip1Id ? { ...c, endOffset: originalEndOffset, orderIndex: i } : { ...c, orderIndex: i }
+          ))
+        }
+      },
+      redo: async () => {
+        const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'split', splitOffset, adAssetId: asset.id }),
+        })
+        if (!r.ok) return
+        const again = await r.json()
+        const c = clipsRef.current
+        const fIdx = c.findIndex(x => x.id === idRef.clip1Id)
+        const nxt = [...c]
+        nxt.splice(fIdx, 1, again.clip1, again.adClip, again.clip2)
+        updateClips(nxt.map((c2, i) => ({ ...c2, orderIndex: i })))
+        idRef.clip1Id = again.clip1.id
+        idRef.adClipId = again.adClip.id
+        idRef.clip2Id = again.clip2.id
+      },
+    })
+  }, [nearestValidSplit, pushHistory])
+
+  // programmatic ab-test group insert at a given time. mirrors the ab-test drop branch.
+  const insertAbTestGroupAtTime = useCallback(async (group: AbTestGroup, time: number) => {
+    const variantAssets = group.adSets.flatMap(g => g.assets)
+    if (variantAssets.length === 0) return
+    const found = nearestValidSplit(time)
+    if (!found) return
+    const { target, splitOffset } = found
+    const originalEndOffset = target.clip.endOffset
+    const snapshotBefore = clipsRef.current
+
+    const splitRes = await fetch(`/api/clips/${target.clip.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'split', splitOffset, adAssetId: variantAssets[0].id }),
+    })
+    if (!splitRes.ok) return
+    const { clip1, adClip, clip2 } = await splitRes.json()
+    await fetch(`/api/clips/${adClip.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'setAbTest',
+        abTestGroupId: group.id,
+        abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)),
+        abTestGroupName: group.name,
+      }),
+    })
+    const fromIdx = snapshotBefore.findIndex(c => c.id === target.clip.id)
+    const markedAdClip = { ...adClip, abTestGroupId: group.id, abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)), abTestGroupName: group.name }
+    const next = [...snapshotBefore]
+    next.splice(fromIdx, 1, clip1, markedAdClip, clip2)
+    updateClips(next.map((c, i) => ({ ...c, orderIndex: i })))
+    setAbTestClips(prev => ({
+      ...prev,
+      [adClip.id]: {
+        groupName: group.name,
+        variants: variantAssets,
+        activeAssetId: variantAssets[0].id,
+        abTestGroupId: group.id,
+        abTestGroupName: group.name,
+      },
+    }))
+
+    const idRef = { clip1Id: clip1.id, adClipId: adClip.id, clip2Id: clip2.id }
+    pushHistory({
+      undo: async () => {
+        await fetch(`/api/clips/${idRef.clip1Id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'mergeSplit', adClipId: idRef.adClipId, clip2Id: idRef.clip2Id }),
+        })
+        updateClips(snapshotBefore.map((c, i) =>
+          c.id === idRef.clip1Id ? { ...c, endOffset: originalEndOffset, orderIndex: i } : { ...c, orderIndex: i }
+        ))
+        setAbTestClips(prev => { const n = { ...prev }; delete n[idRef.adClipId]; return n })
+      },
+      redo: async () => {
+        const r = await fetch(`/api/clips/${idRef.clip1Id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'split', splitOffset, adAssetId: variantAssets[0].id }),
+        })
+        if (!r.ok) return
+        const again = await r.json()
+        await fetch(`/api/clips/${again.adClip.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'setAbTest',
+            abTestGroupId: group.id,
+            abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)),
+            abTestGroupName: group.name,
+          }),
+        })
+        const c2 = clipsRef.current
+        const fIdx = c2.findIndex(x => x.id === idRef.clip1Id)
+        const nxt = [...c2]
+        nxt.splice(fIdx, 1, again.clip1, { ...again.adClip, abTestGroupId: group.id, abTestVariantIds: JSON.stringify(variantAssets.map(a => a.id)), abTestGroupName: group.name }, again.clip2)
+        updateClips(nxt.map((c3, i) => ({ ...c3, orderIndex: i })))
+        setAbTestClips(prev => ({
+          ...prev,
+          [again.adClip.id]: {
+            groupName: group.name,
+            variants: variantAssets,
+            activeAssetId: variantAssets[0].id,
+            abTestGroupId: group.id,
+            abTestGroupName: group.name,
+          },
+        }))
+        idRef.clip1Id = again.clip1.id
+        idRef.adClipId = again.adClip.id
+        idRef.clip2Id = again.clip2.id
+      },
+    })
+  }, [nearestValidSplit, pushHistory])
+
   const doAutoInsert = useCallback(async (newAdAssetIds: string[], mode: 'spread' | 'single' = 'spread', adSetDisplayName?: string, abTestGroupInfo?: { id: string; name: string }) => {
     if (newAdAssetIds.length === 0) return
     const currentClips = [...clipsRef.current]
@@ -564,27 +1496,103 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
       </header>
 
       {/* body */}
-      <div className="flex-1 flex flex-col min-h-0">
+      <div ref={bodyColRef} className="flex-1 flex flex-col min-h-0">
 
         {/* asset panel + preview */}
-        <div className="flex border-b border-gray-200" style={{ height: '45%' }}>
+        <div ref={splitRowRef} className="flex" style={{ height: `${topRowPct}%` }}>
 
-          <AssetPanel
-            contentAssets={contentAssets}
-            adAssets={adAssets}
-            initialAdSets={initialAdSets}
-            initialAbTestGroups={initialAbTestGroups}
-            clips={clips}
-            selectedAdIds={selectedAdIds}
-            setSelectedAdIds={setSelectedAdIds}
-            autoInserting={autoInserting}
-            onAutoInsert={(ids) => doAutoInsert(ids)}
-            onAutoInsertGroup={(assetIds, mode, displayName, groupInfo) => doAutoInsert(assetIds, mode, displayName, groupInfo)}
-            onAssetDuration={onAssetDuration}
-            onPanelDragStart={onPanelDragStart}
-            onPanelDragEnd={onPanelDragEnd}
-            assetTab={assetTab}
-            setAssetTab={setAssetTab}
+          <div className="shrink-0 border-r border-gray-100 flex flex-col overflow-hidden" style={{ width: `${leftPanelPct}%` }}>
+          {markerDialogOpen ? (
+            <CreateAdMarkerDialog
+              onClose={() => { setMarkerDialogOpen(false); setEditingClipId(null); setEditingTime(null) }}
+              adAssets={adAssets}
+              initialAdSets={initialAdSets}
+              initialAbTestGroups={initialAbTestGroups}
+              initialAdFolders={initialAdFolders}
+              clips={clips}
+              currentTime={currentTime}
+              hasValidInsertPoint={editingClipId != null || nearestValidSplit(currentTime) != null}
+              autoInserting={autoInserting}
+              editing={editingClipId != null}
+              editingTime={editingTime}
+              onInsertAd={async (asset) => {
+                if (editingClipId != null && editingTime != null) {
+                  const t = editingTime
+                  const id = editingClipId
+                  await removeClip(id)
+                  setAbTestClips(prev => { const n = { ...prev }; delete n[id]; return n })
+                  await insertAdAtTime(asset, t)
+                } else {
+                  await insertAdAtTime(asset, currentTime)
+                }
+              }}
+              onInsertAbTestGroup={async (group) => {
+                if (editingClipId != null && editingTime != null) {
+                  const t = editingTime
+                  const id = editingClipId
+                  await removeClip(id)
+                  setAbTestClips(prev => { const n = { ...prev }; delete n[id]; return n })
+                  await insertAbTestGroupAtTime(group, t)
+                } else {
+                  await insertAbTestGroupAtTime(group, currentTime)
+                }
+              }}
+              onAutoInsertAds={(ids) => doAutoInsert(ids, 'spread')}
+              onAutoInsertAdSet={(g) => doAutoInsert(g.assets.map(a => a.id), 'spread')}
+              onAutoInsertAbTestGroup={(g) => {
+                const ids = g.adSets.flatMap(s => s.assets.map(a => a.id))
+                doAutoInsert(ids, 'single', g.name, { id: g.id, name: g.name })
+              }}
+              onQuickAbTest={async (prefix, assetIds) => {
+                const setRes = await fetch('/api/ad-sets', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: prefix, assetIds }),
+                })
+                if (!setRes.ok) throw new Error('Failed to create ad set')
+                const newSet: AdSet = await setRes.json()
+                const grpRes = await fetch('/api/ab-test-groups', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: prefix, adSetIds: [newSet.id] }),
+                })
+                if (!grpRes.ok) throw new Error('Failed to create ab test group')
+                const newGroup: AbTestGroup = await grpRes.json()
+                await doAutoInsert(assetIds, 'single', prefix, { id: newGroup.id, name: newGroup.name })
+              }}
+              onAssetDuration={onAssetDuration}
+            />
+          ) : (
+            <EpisodeMarkerPanel
+              packed={packed}
+              abTestClips={abTestClips}
+              onOpenCreate={() => setMarkerDialogOpen(true)}
+              onSelectClip={(id) => setSelectedClipId(prev => prev === id ? null : id)}
+              onDeleteClip={(id) => {
+                removeClip(id)
+                setAbTestClips(prev => { const n = { ...prev }; delete n[id]; return n })
+              }}
+              onEditClip={(id) => {
+                const item = packed.find(p => p.clip.id === id)
+                if (!item) return
+                setEditingClipId(id)
+                setEditingTime(item.start)
+                setMarkerDialogOpen(true)
+              }}
+              selectedClipId={selectedClipId}
+              onContentDragStart={onPanelDragStart}
+              onContentDragEnd={onPanelDragEnd}
+            />
+          )}
+          </div>
+
+          {/* drag handle */}
+          <div
+            data-tour="split-handle"
+            onMouseDown={startSplitResize}
+            onDoubleClick={() => setLeftPanelPct(40)}
+            title="Drag to resize — double-click to reset"
+            className="shrink-0 w-1.5 cursor-col-resize bg-gray-100 hover:bg-indigo-300 active:bg-indigo-400 transition-colors"
           />
 
           {/* Right: video preview */}
@@ -700,7 +1708,16 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
         </div>
 
         {/* timeline */}
-        <div className="flex flex-col min-h-0 bg-white" style={{ height: '55%' }}>
+        {/* vertical drag handle */}
+        <div
+          data-tour="split-handle-v"
+          onMouseDown={startVerticalResize}
+          onDoubleClick={() => setTopRowPct(35)}
+          title="Drag to resize — double-click to reset"
+          className="shrink-0 h-1.5 cursor-row-resize bg-gray-100 hover:bg-indigo-300 active:bg-indigo-400 transition-colors"
+        />
+
+        <div className="flex flex-col min-h-0 bg-white" style={{ height: `${100 - topRowPct}%` }}>
 
           {/* toolbar */}
           <div className="h-10 shrink-0 flex items-center gap-3 px-4 border-b border-gray-100">
@@ -723,17 +1740,27 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
             </span>
             <div className="flex-1" />
             {/* undo/redo */}
-            <button onClick={() => undo()} title="Undo (⌘Z)" className="w-7 h-7 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center transition-colors">
+            <button
+              onClick={() => undo()}
+              disabled={pastRef.current.length === 0}
+              title="Undo (⌘Z)"
+              className="w-7 h-7 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+            >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/>
               </svg>
             </button>
-            <button onClick={() => redo()} title="Redo (⌘⇧Z)" className="w-7 h-7 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center transition-colors">
+            <button
+              onClick={() => redo()}
+              disabled={futureRef.current.length === 0}
+              title="Redo (⌘⇧Z)"
+              className="w-7 h-7 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+            >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M21 10H11a8 8 0 00-8 8v2m18-10l-6 6m6-6l-6-6"/>
               </svg>
             </button>
-            <ZoomControl zoom={zoom} onChange={setZoom} />
+            <ZoomControl zoom={zoom} onChange={handleZoomChange} />
           </div>
 
           <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -741,9 +1768,6 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
             <div className="w-16 shrink-0 flex flex-col border-r border-gray-100 select-none">
               <div style={{ height: CLIP_TRACK_H }} className="shrink-0 flex items-center justify-end pr-2 text-[10px] text-gray-400 font-medium">
                 clips
-              </div>
-              <div style={{ height: WAVE_TRACK_H }} className="shrink-0 flex items-center justify-end pr-2 text-[10px] text-gray-400 font-medium border-t border-gray-200">
-                audio
               </div>
               <div style={{ height: RULER_H }} className="shrink-0" />
             </div>
@@ -771,23 +1795,32 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                     const isAd = clip.clipType === 'ad'
                     const abTest = abTestClips[clip.id]
 
-                    // ab test: stacked variant bars
+                    // ab test: stacked variant bars, waveform inside active bar
                     if (isAd && abTest) {
                       const variantColors = ['bg-purple-200 border-purple-400', 'bg-pink-200 border-pink-400', 'bg-indigo-200 border-indigo-400', 'bg-fuchsia-200 border-fuchsia-400']
+                      const assetDurAb = assetDurations[clip.assetId] ?? clip.asset?.duration ?? 0
+                      const startOffAb = clip.startOffset ?? 0
                       return (
                         <div
                           key={clip.id}
                           data-clip="true"
-                          className="absolute top-1 bottom-1 rounded-md border border-purple-400 bg-purple-50 flex flex-col overflow-hidden z-[2] group select-none"
-                          style={{ left: x, width: w }}
+                          draggable
+                          onDragStart={(e) => onClipDragStart(e, clip.id)}
+                          onDragEnd={onClipDragEnd}
+                          className="absolute top-1 bottom-1 rounded-md border border-purple-400 bg-purple-50 flex flex-col overflow-hidden z-[2] group select-none cursor-grab active:cursor-grabbing"
+                          style={{
+                            left: x,
+                            width: w,
+                            transform: dragGhost?.clipId === clip.id ? `translateX(${dragGhost.offsetPx}px)` : undefined,
+                          }}
                         >
                           {/* header */}
-                          <div className="flex items-center gap-1 px-1.5 py-0.5 min-w-0 shrink-0">
+                          <div className="relative z-[2] flex items-center gap-1 px-1.5 py-0.5 min-w-0 shrink-0">
                             <span className="text-[7px] font-bold text-purple-700 bg-purple-300 px-1 rounded uppercase shrink-0">AB</span>
                             <span className="text-[9px] font-medium text-purple-800 truncate">{abTest.abTestGroupName ?? abTest.groupName} @ {formatTimestamp(start)}</span>
                           </div>
                           {/* variant bars */}
-                          <div className="flex-1 flex flex-col gap-px px-0.5 pb-0.5 min-h-0">
+                          <div className="relative z-[2] flex-1 flex flex-col gap-px px-0.5 pb-0.5 min-h-0">
                             {abTest.variants.map((variant, vi) => {
                               const isActive = variant.id === abTest.activeAssetId
                               const colorClass = variantColors[vi % variantColors.length]
@@ -809,12 +1842,36 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                                       setCurrentClipSrc(variant.filePath)
                                     }
                                   }}
-                                  className={`flex-1 min-h-[14px] rounded-sm border text-[8px] px-1 truncate text-left transition-all ${colorClass} ${
+                                  className={`relative flex-1 min-h-[14px] rounded-sm border text-[8px] px-1 text-left transition-all overflow-hidden ${colorClass} ${
                                     isActive ? 'ring-2 ring-purple-500 ring-inset font-bold' : 'opacity-60 hover:opacity-90'
                                   }`}
                                 >
-                                  {isActive && <span className="mr-0.5">▶</span>}
-                                  {variant.name}
+                                  {/* waveform fills the active variant bar */}
+                                  {isActive && variant.filePath && assetDurAb > 0 && (
+                                    <div className="absolute inset-0 pointer-events-none opacity-70">
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          left: -secondsToPixels(startOffAb, zoom),
+                                          top: 0,
+                                          bottom: 0,
+                                          width: secondsToPixels(assetDurAb, zoom),
+                                        }}
+                                      >
+                                        <WaveformTrack
+                                          src={variant.filePath}
+                                          zoom={zoom}
+                                          height={CLIP_TRACK_H - 2}
+                                          waveColor={WAVE_COLOR}
+                                          progressColor={WAVE_PROGRESS}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+                                  <span className="relative z-[1] flex items-center truncate">
+                                    {isActive && <span className="mr-0.5">▶</span>}
+                                    {variant.name}
+                                  </span>
                                 </button>
                               )
                             })}
@@ -836,6 +1893,8 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                     }
 
                     // normal clip
+                    const assetDur = assetDurations[clip.assetId] ?? clip.asset?.duration ?? 0
+                    const startOff = clip.startOffset ?? 0
                     return (
                       <div
                         key={clip.id}
@@ -847,14 +1906,51 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                           isAd
                             ? 'bg-orange-100 border-orange-300 hover:bg-orange-200'
                             : 'bg-blue-100 border-blue-300 hover:bg-blue-200'
-                        }`}
-                        style={{ left: x, width: w }}
+                        } ${splitHint?.clipId === clip.id ? 'ring-2 ring-orange-400 ring-offset-0' : ''}`}
+                        style={{
+                          left: x,
+                          width: w,
+                          transform: dragGhost?.clipId === clip.id ? `translateX(${dragGhost.offsetPx}px)` : undefined,
+                        }}
                       >
-                        <div className="flex items-center gap-1 min-w-0">
+                        {/* waveform underlay — sliced by overflow */}
+                        {clip.asset?.filePath && assetDur > 0 && (
+                          <div className="absolute inset-0 pointer-events-none opacity-70">
+                            <div
+                              style={{
+                                position: 'absolute',
+                                left: -secondsToPixels(startOff, zoom),
+                                top: 0,
+                                bottom: 0,
+                                width: secondsToPixels(assetDur, zoom),
+                              }}
+                            >
+                              <WaveformTrack
+                                src={clip.asset.filePath}
+                                zoom={zoom}
+                                height={CLIP_TRACK_H - 2}
+                                waveColor={WAVE_COLOR}
+                                progressColor={WAVE_PROGRESS}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {/* break-apart visualization when a new ad is being dropped on this clip */}
+                        {splitHint?.clipId === clip.id && (
+                          <div
+                            className="absolute top-0 bottom-0 bg-white pointer-events-none z-[3]"
+                            style={{
+                              left: (splitHint.splitX - x) - 2,
+                              width: 4,
+                              boxShadow: '0 0 0 1px rgba(249, 115, 22, 0.8)',
+                            }}
+                          />
+                        )}
+                        <div className="relative z-[2] flex items-center gap-1 min-w-0">
                           {isAd && <span className="text-[8px] font-bold text-orange-700 bg-orange-300 px-1 rounded uppercase shrink-0">AD</span>}
                           <span className="text-[10px] font-medium text-gray-700 truncate">{clip.asset?.name}</span>
                         </div>
-                        {dur > 0 && <span className="text-[9px] text-gray-400">{formatTimestamp(dur)}</span>}
+                        {dur > 0 && <span className="relative z-[2] text-[9px] text-gray-400">{formatTimestamp(dur)}</span>}
                         {/* remove */}
                         <button
                           onClick={(e) => { e.stopPropagation(); removeClip(clip.id) }}
@@ -900,8 +1996,8 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                     />
                   )}
 
-                  {/* drag tooltip */}
-                  {dragTime !== null && (
+                  {/* drag tooltip (normal inserts — not split) */}
+                  {dragTime !== null && !splitHint && (
                     <div
                       className="absolute bottom-full mb-1 pointer-events-none z-30 bg-gray-900 text-white text-[10px] font-mono px-1.5 py-0.5 rounded -translate-x-1/2 whitespace-nowrap"
                       style={{ left: secondsToPixels(dragTime, zoom) }}
@@ -909,33 +2005,37 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
                       {formatTimestamp(dragTime)}
                     </div>
                   )}
-                </div>
 
-                {/* waveform track */}
-                <div
-                  className="relative shrink-0 cursor-crosshair overflow-hidden"
-                  style={{ height: WAVE_TRACK_H }}
-                  onClick={handleTrackClick}
-                >
-                  <div className="absolute inset-0 bg-gray-900/[0.02]" />
-                  {currentClipSrc && (
-                    <div className="absolute inset-0">
-                      <div style={{ width: timelineW }} className="h-full">
-                        <WaveformTrack
-                          src={currentClipSrc}
-                          zoom={zoom}
-                          height={WAVE_TRACK_H}
-                        />
+                  {/* split hint: ghost ad placeholder + timestamp pill */}
+                  {splitHint && (
+                    <>
+                      <div
+                        className="absolute top-1 bottom-1 z-[5] pointer-events-none rounded-md border-2 border-dashed border-orange-500 bg-orange-200/75 shadow-lg flex items-center justify-center animate-pulse"
+                        style={{
+                          left: splitHint.splitX,
+                          width: splitHint.adWidth,
+                        }}
+                      >
+                        <span className="text-[9px] font-bold text-orange-700 uppercase tracking-wider">
+                          {splitHint.label ?? 'Ad'}
+                        </span>
                       </div>
-                    </div>
+                      <div
+                        className="absolute z-[6] pointer-events-none bg-orange-500 text-white text-[10px] font-mono px-1.5 py-0.5 rounded shadow whitespace-nowrap -translate-x-1/2"
+                        style={{ left: splitHint.splitX, top: 4 }}
+                      >
+                        Split @ {formatTimestamp(splitHint.splitTime)}
+                      </div>
+                    </>
                   )}
                 </div>
 
                 {/* playhead */}
                 <div
                   data-playhead="true"
+                  data-tour="playhead"
                   className="absolute z-20"
-                  style={{ left: playheadLeft - PLAYHEAD_HIT_W / 2, width: PLAYHEAD_HIT_W, top: -2, height: CLIP_TRACK_H + WAVE_TRACK_H + 4, cursor: 'col-resize' }}
+                  style={{ left: playheadLeft - PLAYHEAD_HIT_W / 2, width: PLAYHEAD_HIT_W, top: -2, height: CLIP_TRACK_H + 4, cursor: 'col-resize' }}
                   onMouseDown={handlePlayheadDown}
                 >
                   <div className="absolute left-1/2 -translate-x-1/2 w-0.5 bg-red-500" style={{ top: 16, bottom: 0 }} />
@@ -972,6 +2072,7 @@ export function EpisodeDesigner({ episode, initialClips, contentAssets, adAssets
           />
         ))}
       </div>
+
     </div>
   )
 }

@@ -18,6 +18,10 @@ export interface AssetPanelProps {
   onAssetDuration: (assetId: string, dur: number) => void
   onPanelDragStart: (e: React.DragEvent, asset: Asset) => void
   onPanelDragEnd: () => void
+  onAdSetDragStart: (e: React.DragEvent, adSet: AdSet) => void
+  onAdSetDragEnd: () => void
+  onAbTestGroupDragStart: (e: React.DragEvent, group: AbTestGroup) => void
+  onAbTestGroupDragEnd: () => void
   assetTab: AssetPanelTab
   setAssetTab: React.Dispatch<React.SetStateAction<AssetPanelTab>>
 }
@@ -36,6 +40,10 @@ export function AssetPanel({
   onAssetDuration,
   onPanelDragStart,
   onPanelDragEnd,
+  onAdSetDragStart,
+  onAdSetDragEnd,
+  onAbTestGroupDragStart,
+  onAbTestGroupDragEnd,
   assetTab,
   setAssetTab,
 }: AssetPanelProps) {
@@ -205,19 +213,32 @@ export function AssetPanel({
               const isSel = selectedAdSetId === group.id
               return (
                 <div key={group.id}>
-                  <button
-                    onClick={() => setSelectedAdSetId(prev => prev === group.id ? null : group.id)}
-                    className={`w-full text-left px-3 py-2.5 border-b border-gray-100 flex items-center gap-2 hover:bg-white transition-colors ${isSel ? 'bg-blue-50' : ''}`}
+                  <div
+                    className={`w-full border-b border-gray-100 flex items-stretch hover:bg-white transition-colors ${isSel ? 'bg-blue-50' : ''}`}
                   >
-                    <div className="w-6 h-6 rounded bg-blue-100 flex items-center justify-center text-blue-600 text-[10px] font-bold">{group.assets.length}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-gray-900 truncate">{group.name}</div>
-                      <div className="text-[10px] text-gray-400 truncate">{group.assets.map(a => a.name).join(', ')}</div>
+                    <div
+                      draggable
+                      onDragStart={(e) => onAdSetDragStart(e, group)}
+                      onDragEnd={onAdSetDragEnd}
+                      onClick={() => setSelectedAdSetId(prev => prev === group.id ? null : group.id)}
+                      title={`Drag to place "${group.name}" on timeline`}
+                      className="flex-1 min-w-0 flex items-center cursor-grab active:cursor-grabbing select-none"
+                    >
+                      <div className="shrink-0 pl-3 pr-1 py-2.5 flex items-center">
+                        <StackedThumbnailIcon assets={group.assets} variant="ad_set" />
+                      </div>
+                      <div className="flex-1 min-w-0 px-2 py-2.5">
+                        <div className="text-xs font-medium text-gray-900 truncate">{group.name}</div>
+                        <div className="text-[10px] text-gray-400 truncate">{group.assets.map(a => a.name).join(', ')}</div>
+                      </div>
                     </div>
-                    <button onClick={async (e) => { e.stopPropagation(); await fetch(`/api/ad-sets/${group.id}`, { method: 'DELETE' }); await refreshAdSets(); if (selectedAdSetId === group.id) setSelectedAdSetId(null) }} className="text-gray-300 hover:text-red-500 transition-colors">
+                    <button
+                      onClick={async (e) => { e.stopPropagation(); await fetch(`/api/ad-sets/${group.id}`, { method: 'DELETE' }); await refreshAdSets(); if (selectedAdSetId === group.id) setSelectedAdSetId(null) }}
+                      className="px-3 text-gray-300 hover:text-red-500 transition-colors"
+                    >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
-                  </button>
+                  </div>
                   {isSel && (
                     <div className="p-2 bg-blue-50 border-b border-gray-100 flex flex-col gap-1.5">
                       {clips.some(c => c.clipType === 'content') ? (<>
@@ -308,21 +329,35 @@ export function AssetPanel({
             {abTestGroups.map((testSet) => {
               const isSel = selectedAbTestGroupId === testSet.id
               const allAssetIds = testSet.adSets.flatMap(g => g.assets.map(a => a.id))
+              const allAssets = testSet.adSets.flatMap(g => g.assets)
               return (
                 <div key={testSet.id}>
-                  <button
-                    onClick={() => setSelectedAbTestGroupId(prev => prev === testSet.id ? null : testSet.id)}
-                    className={`w-full text-left px-3 py-2.5 border-b border-gray-100 flex items-center gap-2 hover:bg-white transition-colors ${isSel ? 'bg-purple-50' : ''}`}
+                  <div
+                    className={`w-full border-b border-gray-100 flex items-stretch hover:bg-white transition-colors ${isSel ? 'bg-purple-50' : ''}`}
                   >
-                    <div className="w-6 h-6 rounded bg-purple-100 flex items-center justify-center text-purple-600 text-[10px] font-bold">{testSet.adSets.length}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-gray-900 truncate">{testSet.name}</div>
-                      <div className="text-[10px] text-gray-400 truncate">{testSet.adSets.map(g => g.name).join(', ')}</div>
+                    <div
+                      draggable
+                      onDragStart={(e) => onAbTestGroupDragStart(e, testSet)}
+                      onDragEnd={onAbTestGroupDragEnd}
+                      onClick={() => setSelectedAbTestGroupId(prev => prev === testSet.id ? null : testSet.id)}
+                      title={`Drag to place "${testSet.name}" AB test on timeline`}
+                      className="flex-1 min-w-0 flex items-center cursor-grab active:cursor-grabbing select-none"
+                    >
+                      <div className="shrink-0 pl-3 pr-1 py-2.5 flex items-center">
+                        <StackedThumbnailIcon assets={allAssets} variant="ab_test" />
+                      </div>
+                      <div className="flex-1 min-w-0 px-2 py-2.5">
+                        <div className="text-xs font-medium text-gray-900 truncate">{testSet.name}</div>
+                        <div className="text-[10px] text-gray-400 truncate">{testSet.adSets.map(g => g.name).join(', ')}</div>
+                      </div>
                     </div>
-                    <button onClick={async (e) => { e.stopPropagation(); await fetch(`/api/ab-test-groups/${testSet.id}`, { method: 'DELETE' }); await refreshAbTestGroups(); if (selectedAbTestGroupId === testSet.id) setSelectedAbTestGroupId(null) }} className="text-gray-300 hover:text-red-500 transition-colors">
+                    <button
+                      onClick={async (e) => { e.stopPropagation(); await fetch(`/api/ab-test-groups/${testSet.id}`, { method: 'DELETE' }); await refreshAbTestGroups(); if (selectedAbTestGroupId === testSet.id) setSelectedAbTestGroupId(null) }}
+                      className="px-3 text-gray-300 hover:text-red-500 transition-colors"
+                    >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
-                  </button>
+                  </div>
                   {isSel && (
                     <div className="p-2 bg-purple-50 border-b border-gray-100 flex flex-col gap-1.5">
                       {clips.some(c => c.clipType === 'content') && (
@@ -391,6 +426,39 @@ function AssetIcon({ asset, selected, onClick, onDragStart, onDragEnd, onDuratio
       {asset.duration > 0 && (
         <p className="text-[9px] text-gray-400 text-center">{formatTimestamp(asset.duration)}</p>
       )}
+    </div>
+  )
+}
+
+function StackedThumbnailIcon({ assets, variant }: { assets: Asset[]; variant: 'ad_set' | 'ab_test' }) {
+  const top = assets.slice(0, 3)
+  const accentBorder = variant === 'ab_test' ? 'border-purple-400' : 'border-blue-400'
+  const badgeBg = variant === 'ab_test' ? 'bg-purple-600' : 'bg-blue-600'
+  const placeholderBg = variant === 'ab_test' ? 'bg-purple-200' : 'bg-blue-200'
+  return (
+    <div className="relative w-12 h-10 shrink-0">
+      {top.map((asset, i) => {
+        const offset = i * 3
+        return (
+          <div
+            key={asset.id}
+            className={`absolute top-0 left-0 w-10 h-10 rounded-md border-2 ${accentBorder} overflow-hidden bg-gray-100 shadow-sm`}
+            style={{
+              transform: `translate(${offset}px, ${-offset * 0.5}px)`,
+              zIndex: 10 - i,
+            }}
+          >
+            {asset.filePath ? (
+              <video src={asset.filePath} className="w-full h-full object-cover pointer-events-none" preload="metadata" muted playsInline />
+            ) : (
+              <div className={`w-full h-full ${placeholderBg}`} />
+            )}
+          </div>
+        )
+      })}
+      <span className={`absolute -top-1 -right-1 z-20 px-1 min-w-[1rem] h-4 rounded-full ${badgeBg} text-white text-[9px] font-bold flex items-center justify-center shadow`}>
+        {assets.length}
+      </span>
     </div>
   )
 }

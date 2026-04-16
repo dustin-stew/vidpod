@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useMemo } from 'react'
 import { formatTimestamp } from '@/lib/utils'
 import type { Asset, AssetContentType, AdSet, AbTestGroup } from '@/types'
 
@@ -11,22 +11,29 @@ interface AssetsLibraryProps {
   initialAds: Asset[]
   initialAdSets: AdSet[]
   initialAbTestGroups: AbTestGroup[]
+  initialAdFolders: string[]
 }
 
 type UploadStep = 'idle' | 'uploading'
+type FolderSelection = string | '__all__' | '__none__'
 
-export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initialAbTestGroups }: AssetsLibraryProps) {
+export function AssetsLibrary({
+  initialContent, initialAds, initialAdSets, initialAbTestGroups, initialAdFolders,
+}: AssetsLibraryProps) {
   const [activeTab, setActiveTab] = useState<AssetsTab>('content')
   const [contentAssets, setContentAssets] = useState<Asset[]>(initialContent)
   const [adAssets, setAdAssets] = useState<Asset[]>(initialAds)
   const [adSets, setAdSets] = useState<AdSet[]>(initialAdSets)
   const [abTestGroups, setAbTestGroups] = useState<AbTestGroup[]>(initialAbTestGroups)
+  const [adFolders, setAdFolders] = useState<string[]>(initialAdFolders)
   const [uploadStep, setUploadStep] = useState<UploadStep>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const contentInputRef = useRef<HTMLInputElement>(null)
   const adInputRef = useRef<HTMLInputElement>(null)
+  const pendingFolderRef = useRef<string | null>(null)
 
   const [selectedAdIds, setSelectedAdIds] = useState<Set<string>>(new Set())
+  const [folderFilter, setFolderFilter] = useState<FolderSelection>('__all__')
 
   const [selectedAdSetId, setSelectedAdSetId] = useState<string | null>(null)
   const [creatingAdSet, setCreatingAdSet] = useState(false)
@@ -35,8 +42,12 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
   const [creatingAbTestGroup, setCreatingAbTestGroup] = useState<string | null>(null)
   const [abTestGroupName, setAbTestGroupName] = useState('')
 
-  const currentAssets = activeTab === 'content' ? contentAssets : adAssets
+  const [uploadFolderDialogOpen, setUploadFolderDialogOpen] = useState(false)
 
+  const refreshFolders = useCallback(async () => {
+    const res = await fetch('/api/assets/folders')
+    if (res.ok) setAdFolders(await res.json())
+  }, [])
   const refreshAdSets = useCallback(async () => {
     const res = await fetch('/api/ad-sets')
     if (res.ok) setAdSets(await res.json())
@@ -46,7 +57,7 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
     if (res.ok) setAbTestGroups(await res.json())
   }, [])
 
-  const handleUpload = useCallback(async (file: File, contentType: AssetContentType) => {
+  const handleUpload = useCallback(async (file: File, contentType: AssetContentType, folder: string | null) => {
     setUploadStep('uploading')
     setUploadProgress(0)
     try {
@@ -60,7 +71,7 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
       const assetRes = await fetch('/api/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, filePath: uploadResult.filePath, type: 'video', contentType }),
+        body: JSON.stringify({ name, filePath: uploadResult.filePath, type: 'video', contentType, folder }),
       })
       const asset: Asset = await assetRes.json()
 
@@ -68,6 +79,9 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
         setContentAssets((prev) => [asset, ...prev])
       } else {
         setAdAssets((prev) => [asset, ...prev])
+        if (folder && !adFolders.includes(folder)) {
+          setAdFolders(prev => [...prev, folder].sort((a, b) => a.localeCompare(b)))
+        }
       }
       setActiveTab(contentType)
     } catch {
@@ -75,7 +89,30 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
     } finally {
       setUploadStep('idle')
     }
+  }, [adFolders])
+
+  const startAdUpload = useCallback((folder: string | null) => {
+    pendingFolderRef.current = folder
+    setUploadFolderDialogOpen(false)
+    adInputRef.current?.click()
   }, [])
+
+  const updateAssetFolder = useCallback(async (assetId: string, folder: string | null) => {
+    setAdAssets(prev => prev.map(a => a.id === assetId ? { ...a, folder } : a))
+    await fetch(`/api/assets/${assetId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder }),
+    })
+    await refreshFolders()
+  }, [refreshFolders])
+
+  const filteredAdAssets = useMemo(() => {
+    if (folderFilter === '__all__') return adAssets
+    if (folderFilter === '__none__') return adAssets.filter(a => !a.folder)
+    return adAssets.filter(a => a.folder === folderFilter)
+  }, [adAssets, folderFilter])
+
+  const currentAssets = activeTab === 'content' ? contentAssets : filteredAdAssets
 
   return (
     <div className="flex-1 bg-gray-50 min-h-screen">
@@ -88,7 +125,7 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => adInputRef.current?.click()}
+              onClick={() => setUploadFolderDialogOpen(true)}
               className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
             >
               <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -163,13 +200,43 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
           </p>
         )}
 
+        {activeTab === 'ad' && (
+          <FolderFilterStrip
+            folders={adFolders}
+            value={folderFilter}
+            onChange={setFolderFilter}
+            onRename={async (oldName, newName) => {
+              const res = await fetch('/api/assets/folders', {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldName, newName }),
+              })
+              if (res.ok) {
+                setAdAssets(prev => prev.map(a => a.folder === oldName ? { ...a, folder: newName } : a))
+                await refreshFolders()
+                if (folderFilter === oldName) setFolderFilter(newName)
+              }
+            }}
+            onDelete={async (folder) => {
+              await fetch(`/api/assets/folders?name=${encodeURIComponent(folder)}`, { method: 'DELETE' })
+              setAdAssets(prev => prev.map(a => a.folder === folder ? { ...a, folder: null } : a))
+              await refreshFolders()
+              if (folderFilter === folder) setFolderFilter('__all__')
+            }}
+            counts={{
+              all: adAssets.length,
+              none: adAssets.filter(a => !a.folder).length,
+              byFolder: Object.fromEntries(adFolders.map(f => [f, adAssets.filter(a => a.folder === f).length])),
+            }}
+          />
+        )}
+
         {/* asset grid */}
         {(activeTab === 'content' || activeTab === 'ad') && (
           <>
             {currentAssets.length === 0 ? (
               <EmptyState
                 type={activeTab as AssetContentType}
-                onUpload={() => (activeTab === 'content' ? contentInputRef : adInputRef).current?.click()}
+                onUpload={() => activeTab === 'content' ? contentInputRef.current?.click() : setUploadFolderDialogOpen(true)}
               />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -181,11 +248,13 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
                       asset={asset}
                       selectable={activeTab === 'ad'}
                       selected={isSelected}
+                      folders={adFolders}
                       onToggleSelect={activeTab === 'ad' ? () => setSelectedAdIds(prev => {
                         const next = new Set(prev)
                         if (next.has(asset.id)) next.delete(asset.id); else next.add(asset.id)
                         return next
                       }) : undefined}
+                      onSetFolder={activeTab === 'ad' ? (folder) => updateAssetFolder(asset.id, folder) : undefined}
                     />
                   )
                 })}
@@ -393,7 +462,7 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0]
-          if (f) handleUpload(f, 'content')
+          if (f) handleUpload(f, 'content', null)
           e.target.value = ''
         }}
       />
@@ -404,10 +473,188 @@ export function AssetsLibrary({ initialContent, initialAds, initialAdSets, initi
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0]
-          if (f) handleUpload(f, 'ad')
+          const folder = pendingFolderRef.current
+          pendingFolderRef.current = null
+          if (f) handleUpload(f, 'ad', folder)
           e.target.value = ''
         }}
       />
+
+      {uploadFolderDialogOpen && (
+        <UploadFolderDialog
+          folders={adFolders}
+          onCancel={() => setUploadFolderDialogOpen(false)}
+          onPick={startAdUpload}
+        />
+      )}
+    </div>
+  )
+}
+
+function FolderFilterStrip({
+  folders, value, onChange, counts, onRename, onDelete,
+}: {
+  folders: string[]
+  value: FolderSelection
+  onChange: (v: FolderSelection) => void
+  counts: { all: number; none: number; byFolder: Record<string, number> }
+  onRename: (oldName: string, newName: string) => Promise<void>
+  onDelete: (folder: string) => Promise<void>
+}) {
+  return (
+    <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+      <FolderPill active={value === '__all__'} onClick={() => onChange('__all__')}>
+        Redmen TV <span className="ml-1 text-[10px] text-gray-400">{counts.all}</span>
+      </FolderPill>
+      {folders.map(f => (
+        <FolderPillWithMenu
+          key={f}
+          name={f}
+          count={counts.byFolder[f] ?? 0}
+          active={value === f}
+          onClick={() => onChange(f)}
+          onRename={(newName) => onRename(f, newName)}
+          onDelete={() => onDelete(f)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function FolderPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function FolderPillWithMenu({
+  name, count, active, onClick, onRename, onDelete,
+}: {
+  name: string; count: number; active: boolean; onClick: () => void
+  onRename: (newName: string) => Promise<void>
+  onDelete: () => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(name)
+  if (editing) {
+    return (
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const n = draft.trim()
+          if (n && n !== name) await onRename(n)
+          setEditing(false)
+        }}
+        className="flex items-center gap-1"
+      >
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => setEditing(false)}
+          onKeyDown={(e) => { if (e.key === 'Escape') { setDraft(name); setEditing(false) } }}
+          className="px-2 py-1 rounded-full text-xs border border-gray-300 focus:outline-none focus:border-gray-500 w-28"
+        />
+      </form>
+    )
+  }
+  return (
+    <div className={`group inline-flex items-center rounded-full text-xs font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
+      <button onClick={onClick} className="pl-2.5 pr-1.5 py-1">
+        {name} <span className={`ml-1 text-[10px] ${active ? 'text-gray-300' : 'text-gray-400'}`}>{count}</span>
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); setDraft(name); setEditing(true) }}
+        className={`px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity ${active ? 'text-gray-300 hover:text-white' : 'text-gray-400 hover:text-gray-700'}`}
+        title="Rename folder"
+      >
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+      </button>
+      <button
+        onClick={async (e) => {
+          e.stopPropagation()
+          if (confirm(`Clear folder "${name}"? Ads will be moved to Redmen TV.`)) await onDelete()
+        }}
+        className={`px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity ${active ? 'text-gray-300 hover:text-white' : 'text-gray-400 hover:text-red-500'}`}
+        title="Delete folder (keeps ads)"
+      >
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+  )
+}
+
+function UploadFolderDialog({
+  folders, onCancel, onPick,
+}: {
+  folders: string[]
+  onCancel: () => void
+  onPick: (folder: string | null) => void
+}) {
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100">
+          <h2 className="text-base font-semibold text-gray-900">Upload ad</h2>
+          <p className="text-xs text-gray-500 mt-0.5">Pick a folder to organize this ad.</p>
+        </div>
+        <div className="px-5 py-3 max-h-80 overflow-y-auto flex flex-col gap-1">
+          <button
+            onClick={() => onPick(null)}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+            <span className="flex-1">Redmen TV</span>
+          </button>
+          {folders.map(f => (
+            <button
+              key={f}
+              onClick={() => onPick(f)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+              <span className="flex-1">{f}</span>
+            </button>
+          ))}
+          {creating ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (newName.trim()) onPick(newName.trim())
+              }}
+              className="flex items-center gap-1.5 px-3 py-2"
+            >
+              <input
+                autoFocus
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setCreating(false); setNewName('') } }}
+                placeholder="Folder name…"
+                className="flex-1 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:border-blue-400"
+              />
+              <button type="submit" disabled={!newName.trim()} className="px-3 py-1.5 rounded-lg bg-blue-500 text-white text-xs font-medium hover:bg-blue-600 disabled:opacity-40">Use</button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setCreating(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm text-blue-600 hover:bg-blue-50 transition-colors border border-dashed border-blue-200 mt-1"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+              New folder
+            </button>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-end">
+          <button onClick={onCancel} className="px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -452,17 +699,24 @@ function AssetCard({
   asset,
   selectable,
   selected,
+  folders,
   onToggleSelect,
+  onSetFolder,
 }: {
   asset: Asset
   selectable?: boolean
   selected?: boolean
+  folders?: string[]
   onToggleSelect?: () => void
+  onSetFolder?: (folder: string | null) => void
 }) {
   const isAd = asset.contentType === 'ad'
+  const [folderMenuOpen, setFolderMenuOpen] = useState(false)
+  const [creatingNew, setCreatingNew] = useState(false)
+  const [newName, setNewName] = useState('')
   return (
     <div
-      className={`bg-white rounded-xl border overflow-hidden group hover:border-gray-300 hover:shadow-sm transition-all ${
+      className={`relative bg-white rounded-xl border overflow-hidden group hover:border-gray-300 hover:shadow-sm transition-all ${
         selected ? 'border-blue-400 ring-2 ring-blue-100' : 'border-gray-200'
       } ${selectable ? 'cursor-pointer' : ''}`}
       onClick={selectable ? onToggleSelect : undefined}
@@ -494,10 +748,70 @@ function AssetCard({
       </div>
       <div className="p-2.5">
         <p className="text-xs font-medium text-gray-900 truncate">{asset.name}</p>
-        {asset.duration > 0 && (
-          <p className="text-[11px] text-gray-400 mt-0.5">{formatTimestamp(asset.duration)}</p>
-        )}
+        <div className="flex items-center gap-1 mt-0.5">
+          {asset.duration > 0 && (
+            <p className="text-[11px] text-gray-400">{formatTimestamp(asset.duration)}</p>
+          )}
+          {isAd && onSetFolder && (
+            <>
+              {asset.duration > 0 && <span className="text-gray-300">·</span>}
+              <button
+                onClick={(e) => { e.stopPropagation(); setFolderMenuOpen(v => !v) }}
+                className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-700 hover:bg-orange-100 transition-colors inline-flex items-center gap-0.5"
+                title="Change folder"
+              >
+                <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                <span className="truncate max-w-[10rem]">{asset.folder ?? 'Redmen TV'}</span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
+      {folderMenuOpen && onSetFolder && (
+        <div
+          className="absolute inset-x-2 bottom-2 z-10 bg-white rounded-lg shadow-xl border border-gray-200 max-h-56 overflow-y-auto p-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => { onSetFolder(null); setFolderMenuOpen(false) }}
+            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs hover:bg-gray-50 ${!asset.folder ? 'text-gray-900 font-medium' : 'text-gray-600'}`}
+          >
+            Redmen TV
+          </button>
+          {(folders ?? []).map(f => (
+            <button
+              key={f}
+              onClick={() => { onSetFolder(f); setFolderMenuOpen(false) }}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs hover:bg-gray-50 ${asset.folder === f ? 'text-orange-700 font-medium' : 'text-gray-600'}`}
+            >
+              {f}
+            </button>
+          ))}
+          {creatingNew ? (
+            <form onSubmit={(e) => {
+              e.preventDefault()
+              if (newName.trim()) { onSetFolder(newName.trim()); setFolderMenuOpen(false); setCreatingNew(false); setNewName('') }
+            }} className="flex items-center gap-1 px-1 py-1">
+              <input
+                autoFocus
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setCreatingNew(false); setNewName('') } }}
+                placeholder="New folder…"
+                className="flex-1 px-2 py-1 rounded border border-gray-300 text-xs focus:outline-none focus:border-blue-400"
+              />
+              <button type="submit" disabled={!newName.trim()} className="px-2 py-1 rounded bg-blue-500 text-white text-[10px] font-medium disabled:opacity-40">Add</button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setCreatingNew(true)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-blue-600 hover:bg-blue-50 border border-dashed border-blue-200 mt-1"
+            >
+              + New folder
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
