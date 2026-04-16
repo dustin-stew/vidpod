@@ -11,7 +11,7 @@ Markers-first timeline editor for assembling video clips and placing ads. A side
 
 Waveform visualization with automatic quiet-spot detection highlights optimal ad placement, and clip splitting handles mid-stream insertion. Horizontal and vertical dividers let you resize the marker panel, preview, and timeline to taste (persisted per browser).
 
-![Episode Designer](docs/screenshots/episode-designer-ads.png)
+![Vidpod Demo](docs/screenshots/tutorial-demo.gif)
 
 Supports undo/redo and keyboard shortcuts (spacebar play/pause, cmd+z). Toggle between 16:9 and 9:16 aspect ratios.
 
@@ -19,8 +19,7 @@ Supports undo/redo and keyboard shortcuts (spacebar play/pause, cmd+z). Toggle b
 Organize ads into reusable **Ad Sets**, then combine ad sets into **AB Test Groups** for variant testing. Insert groups as stacked variant clips in the timeline and click to preview different ad creatives.
 
 <p float="left">
-  <img src="docs/screenshots/episode-designer-adsets.png" width="49%" />
-  <img src="docs/screenshots/episode-designer-abtests.png" width="49%" />
+  <img src="docs/screenshots/episode-designer-abtests.png" width="98%" />
 </p>
 
 ### Asset Management
